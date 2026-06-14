@@ -1,0 +1,34 @@
+[project]
+name = "agentic-org"
+version = "0.1.0"
+description = "A project-agnostic product/engineering organization built from autonomous agents, orchestrated with Temporal."
+requires-python = ">=3.10"
+dependencies = [
+    "temporalio>=1.28",
+    "anthropic>=0.109",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+# Bring-your-own provider: the Vercel AI Gateway provider talks to its OpenAI-compatible
+# endpoint via the openai SDK (lazy-imported, so anthropic-only users don't need it).
+vercel = [
+    "openai>=1.40",
+]
+# Claude Agent SDK — the M4 engineering-pod runtime, and an optional reasoning provider
+# that runs on a Claude subscription's monthly Agent SDK credit (shells out to `claude`).
+agent-sdk = [
+    "claude-agent-sdk>=0.2",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+# The org's own package layout. The target *project* the org operates on is data
+# (a Project Profile under orchestrator/projects), never code that lives here.
+[tool.setuptools.packages.find]
+include = ["orchestrator*", "worker*", "cli*"]

@@ -1,0 +1,8 @@
+# Triage eval cases. `input` is the text the persona receives; `expect` asserts only the
+# deterministic fields (kind + needs_clarification). Priority is left to schema validation
+# (it's a Literal) — exact-priority is a quality judgment for D5, not a hard assertion.
+{"id": "clear-bug-repro", "input": "Title: Saving a weekly plan returns a 500 error\n\nEvery time I click Save on the week view, the page shows 'Internal Server Error'. Happens on Chrome and Safari, reproducible every time.", "expect": {"kind": "bug", "needs_clarification": false}}
+{"id": "clear-feature", "input": "Title: Add a 'surprise me' button\n\nI'd love a one-click button that fills my week with recommended recipes based on my household profile.", "expect": {"kind": "feature", "needs_clarification": false}}
+{"id": "vague-feature", "input": "Title: make it better\n\ncan you just make the planning part nicer somehow", "expect": {"kind": "feature", "needs_clarification": true}}
+{"id": "vague-bug", "input": "Title: it's broken\n\ndoesn't work anymore", "expect": {"kind": "bug", "needs_clarification": true}}
+{"id": "feature-as-complaint", "input": "Title: annoying that I retype my allergies\n\nWhy do I have to re-enter my allergies every single week? It should remember them.", "expect": {"kind": "feature", "needs_clarification": false}}

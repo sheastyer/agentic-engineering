@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agentic Org — Feature & Bug Flow (canonical)</title>
+<style>
+  :root {
+    --ink: #1c1c1f;
+    --muted: #6b6b73;
+    --line: #d7d7db;
+    --bg: #f6f5f2;
+    --card: #ffffff;
+    --activity: #2f6f8f;     /* teal — agent activity */
+    --gate: #b4541f;         /* terracotta — human gate */
+    --timer: #8a6d1f;        /* amber — timer/escalation */
+    --child: #4a3f7a;        /* indigo — child workflow */
+    --budget: #9b2242;       /* crimson — budget gate */
+    --terminal: #2f7a44;     /* green — terminal */
+    --reject: #8a8a92;       /* grey — reject/abort terminal */
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px 20px 80px;
+    background: var(--bg); color: var(--ink);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 920px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 28px; font-size: 14px; }
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 14px 22px;
+    padding: 16px 18px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; margin-bottom: 34px; font-size: 13px;
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); }
+  .swatch { width: 13px; height: 13px; border-radius: 3px; flex: none; }
+  .col-title {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin: 0 0 14px; font-weight: 600;
+  }
+  .flow { display: flex; flex-direction: column; align-items: stretch; }
+  .step {
+    position: relative; background: var(--card); border: 1px solid var(--line);
+    border-left: 4px solid var(--activity); border-radius: 10px;
+    padding: 12px 16px; margin: 0 auto; width: 100%;
+  }
+  .step .n {
+    font-size: 11px; color: var(--muted); font-weight: 600; letter-spacing: 0.04em;
+  }
+  .step .t { font-weight: 600; margin-top: 2px; }
+  .step .d { color: var(--muted); font-size: 13px; margin-top: 3px; }
+  .step.gate   { border-left-color: var(--gate); }
+  .step.child  { border-left-color: var(--child); background: #fbfaff; }
+  .step.budget { border-left-color: var(--budget); background: #fdf6f8; }
+  .step.terminal { border-left-color: var(--terminal); background: #f4faf5; }
+  .tag {
+    display: inline-block; font-size: 11px; font-weight: 600; border-radius: 999px;
+    padding: 1px 9px; margin-left: 8px; vertical-align: middle;
+  }
+  .tag.gate { background: #f6e6dc; color: var(--gate); }
+  .tag.timer { background: #f3ecd5; color: var(--timer); }
+  .tag.loop { background: #e7eef2; color: var(--activity); }
+  .tag.child { background: #e9e6f5; color: var(--child); }
+  .tag.budget { background: #f6dde4; color: var(--budget); }
+  .arrow { align-self: center; color: var(--line); font-size: 20px; line-height: 1; margin: 7px 0; }
+  .arrow b { color: var(--muted); font-size: 12px; font-weight: 600; }
+  .branch {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin: 10px 0;
+  }
+  .branch .lane { background: transparent; }
+  .note {
+    font-size: 12.5px; color: var(--muted); background: #efeeea;
+    border-radius: 8px; padding: 9px 12px; margin: 8px 0;
+  }
+  .note b { color: var(--ink); }
+  .loopbox {
+    border: 1.5px dashed var(--line); border-radius: 12px; padding: 10px 12px 4px;
+    margin: 4px 0;
+  }
+  .loopbox .cap {
+    font-size: 11.5px; color: var(--activity); font-weight: 600; margin-bottom: 8px;
+  }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  footer { margin-top: 40px; color: var(--muted); font-size: 12.5px; text-align: center; }
+  code { background: #ececef; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Agentic Org — orchestration flow</h1>
+  <p class="sub">Canonical spec for stage order, human gates, timers, bounded loops, and child-workflow boundaries. Reflects the implemented Temporal workflows (the code is the source of truth). Every model call lives in an <em>activity</em>; workflow code is deterministic orchestration only.</p>
+
+  <div class="legend">
+    <span><span class="swatch" style="background:var(--activity)"></span> Agent activity</span>
+    <span><span class="swatch" style="background:var(--gate)"></span> Human gate (signal + timeout)</span>
+    <span><span class="swatch" style="background:var(--timer)"></span> Timer / escalation</span>
+    <span><span class="swatch" style="background:var(--child)"></span> Child workflow</span>
+    <span><span class="swatch" style="background:var(--budget)"></span> Budget gate</span>
+    <span><span class="swatch" style="background:var(--terminal)"></span> Terminal state</span>
+  </div>
+
+  <!-- INTAKE -->
+  <p class="col-title">Intake</p>
+  <div class="flow">
+    <div class="step">
+      <div class="t">Feedback → intake queue → <code>IntakeRouter</code></div>
+      <div class="d">A queue consumer (client-side glue, not an LLM loop) starts the right workflow. Idempotent on feedback id — the system costs nothing while idle.</div>
+    </div>
+    <div class="arrow">▼ <b>branch on kind</b></div>
+    <div class="branch">
+      <div class="lane">
+        <div class="step child" style="text-align:center"><div class="t">FeatureRequestWorkflow</div></div>
+      </div>
+      <div class="lane">
+        <div class="step child" style="text-align:center"><div class="t">BugWorkflow</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="two" style="margin-top:30px">
+    <!-- FEATURE LANE -->
+    <div>
+      <p class="col-title">Feature request</p>
+      <div class="flow">
+        <div class="step"><div class="n">1 · ACTIVITY</div><div class="t">pm_draft_brief</div><div class="d">Opus. Problem, target users, UI-impacting?</div></div>
+        <div class="arrow">▼</div>
+
+        <div class="step gate">
+          <div class="n">2 · EXEC COUNCIL</div>
+          <div class="t">council vote <span class="tag gate">human gate</span><span class="tag timer">72h</span></div>
+          <div class="d">Legal + sales agents vote in parallel (advisory). The <b>human vote is decisive</b> — veto/override. If no human vote in 72h → escalate to agent advisory majority.</div>
+        </div>
+        <div class="arrow">▼ <b>approved?</b></div>
+        <div class="note">✗ not approved → <b>REJECTED_BY_COUNCIL</b> (terminal)</div>
+
+        <div class="loopbox">
+          <div class="cap">↻ PM sign-off loopback — bounded (max 2 revisions)</div>
+          <div class="step"><div class="n">3 · ACTIVITY</div><div class="t">pm_write_prd</div></div>
+          <div class="arrow">▼</div>
+          <div class="loopbox" style="border-color:#cfe0e8">
+            <div class="cap">↻ PRD ⇄ architect — bounded (max 3 passes)</div>
+            <div class="step"><div class="t">architect_review_prd <span class="tag loop">≤3</span></div><div class="d">reject → pm_revise_prd → re-review</div></div>
+          </div>
+          <div class="arrow">▼</div>
+          <div class="step"><div class="n">4 · ACTIVITY (conditional)</div><div class="t">ux_generate_mocks</div><div class="d">only if brief is UI-impacting</div></div>
+          <div class="arrow">▼</div>
+          <div class="step child"><div class="n">5 · CHILD</div><div class="t">ConsumerResearch <span class="tag child">fan-out</span></div><div class="d">N personas in parallel → synthesize</div></div>
+          <div class="arrow">▼</div>
+          <div class="step gate"><div class="n">6 · GATE</div><div class="t">PM sign-off <span class="tag gate">human gate</span><span class="tag timer">7d</span></div><div class="d">“revise” loops back to PRD revision (bounded)</div></div>
+        </div>
+        <div class="arrow">▼ <b>approve</b></div>
+
+        <div class="step"><div class="n">7 · ACTIVITY</div><div class="t">architect_plan_stories</div></div>
+        <div class="arrow">▼</div>
+        <div class="step child"><div class="n">8 · CHILD</div><div class="t">EngineeringPod <span class="tag child">orchestrator-worker</span></div><div class="d">Agent SDK per story → QA, bounded fix loop. Sandboxed container per run (M4).</div></div>
+        <div class="arrow">▼</div>
+        <div class="step gate"><div class="n">9 · GATE</div><div class="t">deploy approval <span class="tag gate">human gate</span><span class="tag timer">7d</span></div><div class="d">decline → HELD · timeout → ESCALATED</div></div>
+        <div class="arrow">▼</div>
+        <div class="step terminal"><div class="t">deploy → SHIPPED</div></div>
+      </div>
+    </div>
+
+    <!-- BUG LANE -->
+    <div>
+      <p class="col-title">Bug</p>
+      <div class="flow">
+        <div class="step"><div class="n">ACTIVITY</div><div class="t">triage_feedback</div><div class="d">Haiku. Priority + needs-clarification?</div></div>
+        <div class="arrow">▼</div>
+        <div class="step"><div class="n">ACTIVITY</div><div class="t">dedupe_check</div></div>
+        <div class="arrow">▼</div>
+        <div class="note">duplicate → <b>CLOSED_DUPLICATE</b> (terminal)</div>
+        <div class="step gate"><div class="n">GATE (conditional)</div><div class="t">await_clarification <span class="tag gate">human gate</span><span class="tag timer">7d</span></div><div class="d">only if triage asked; timeout → proceed</div></div>
+        <div class="arrow">▼</div>
+        <div class="step"><div class="n">ACTIVITY</div><div class="t">pm_prioritize_bug</div></div>
+        <div class="arrow">▼</div>
+        <div class="step"><div class="n">ACTIVITY</div><div class="t">fix_bug</div><div class="d">Agent SDK (sandboxed, M4)</div></div>
+        <div class="arrow">▼</div>
+        <div class="step"><div class="n">ACTIVITY</div><div class="t">review_fix → qa_review</div></div>
+        <div class="arrow">▼</div>
+        <div class="step gate"><div class="n">GATE</div><div class="t">deploy approval <span class="tag gate">human gate</span><span class="tag timer">7d</span></div><div class="d">decline → HELD · timeout → ESCALATED</div></div>
+        <div class="arrow">▼</div>
+        <div class="step terminal"><div class="t">deploy → SHIPPED</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CROSS-CUTTING -->
+  <p class="col-title" style="margin-top:34px">Cross-cutting</p>
+  <div class="step budget">
+    <div class="t">Budget gate <span class="tag budget">human gate</span><span class="tag timer">7d</span></div>
+    <div class="d">After every stage, accumulated spend is checked against the per-workflow ceiling (<b>$3 feature · $0.50 bug</b>). Crossing it trips a <code>budget_override</code> signal: approve once → continue (won’t re-trip) · decline/timeout → <b>OVER_BUDGET</b> (terminal). Cost is dollar-denominated from real <code>response.usage</code> × tier pricing.</div>
+  </div>
+
+  <footer>
+    Invariants: deterministic workflow code (no LLM/IO/clock/randomness) · human gates are signals with timeouts · every agent↔agent loop is bounded · deploy is always human-gated · coding agents run sandboxed. See <code>CLAUDE.md</code> §9.
+  </footer>
+</div>
+</body>
+</html>

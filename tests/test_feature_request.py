@@ -1,0 +1,156 @@
+"""FeatureRequestWorkflow behavior on stubs — happy path and the key branches.
+
+Uses a real local dev server (instant stub activities, real wall-clock) so the day-long
+sign-off/deploy timeouts never fire mid-test and signal ordering is deterministic.
+"""
+
+import pytest
+from temporalio.testing import WorkflowEnvironment
+from temporalio.worker import Worker
+
+from orchestrator.shared.config import MAX_PRD_PASSES, TASK_QUEUE
+from orchestrator.shared.types import Status
+from orchestrator.workflows.feature_request import FeatureRequestWorkflow
+from tests import mock_activities as mock
+from tests.helpers import ALL_WORKFLOWS, TEMPORAL_CLI, activities_with, feature_event, wait_until
+
+GET_STATE = FeatureRequestWorkflow.get_state
+
+
+async def _start(env, activities):
+    worker = Worker(
+        env.client, task_queue=TASK_QUEUE, workflows=ALL_WORKFLOWS, activities=activities
+    )
+    return worker
+
+
+@pytest.mark.asyncio
+async def test_happy_path_ships():
+    async with await WorkflowEnvironment.start_local(dev_server_existing_path=TEMPORAL_CLI) as env:
+        async with await _start(env, activities_with()):
+            event = feature_event()
+            handle = await env.client.start_workflow(
+                FeatureRequestWorkflow.run, event, id=event.id, task_queue=TASK_QUEUE
+            )
+            # Human plays every gate, in order.
+            await handle.signal(FeatureRequestWorkflow.submit_human_vote, args=[True, "tester"])
+            await wait_until(handle, lambda s: s.stage == "pm_signoff", GET_STATE)
+            await handle.signal(FeatureRequestWorkflow.submit_pm_signoff, "approve")
+            await wait_until(handle, lambda s: s.stage == "deploy_approval", GET_STATE)
+            await handle.signal(FeatureRequestWorkflow.submit_deploy_approval, True)
+
+            result = await handle.result()
+
+    assert result.status == Status.SHIPPED
+    assert result.cost_tokens > 0
+    # Full control flow was exercised.
+    for expected in ("pm_draft_brief", "exec_council", "consumer_research", "engineering_pod", "deploy"):
+        assert expected in result.stage_log
+
+
+@pytest.mark.asyncio
+async def test_human_veto_rejects_despite_agent_approval():
+    # Governance: the human vote is decisive. Agents approve (stub), human says NO ->
+    # the feature is rejected and short-circuits before implementation.
+    async with await WorkflowEnvironment.start_local(dev_server_existing_path=TEMPORAL_CLI) as env:
+        async with await _start(env, activities_with()):
+            event = feature_event()
+            handle = await env.client.start_workflow(
+                FeatureRequestWorkflow.run, event, id=event.id, task_queue=TASK_QUEUE
+            )
+            await handle.signal(FeatureRequestWorkflow.submit_human_vote, args=[False, "tester"])
+            result = await handle.result()
+
+    assert result.status == Status.REJECTED_BY_COUNCIL
+    assert "engineering_pod" not in result.stage_log
+
+
+@pytest.mark.asyncio
+async def test_human_overrides_agent_dissent():
+    # Both agents vote NO; the human YES is decisive and the feature proceeds to ship.
+    async with await WorkflowEnvironment.start_local(dev_server_existing_path=TEMPORAL_CLI) as env:
+        activities = activities_with({"council_agent_vote": mock.council_vote_reject})
+        async with await _start(env, activities):
+            event = feature_event()
+            handle = await env.client.start_workflow(
+                FeatureRequestWorkflow.run, event, id=event.id, task_queue=TASK_QUEUE
+            )
+            await handle.signal(FeatureRequestWorkflow.submit_human_vote, args=[True, "tester"])
+            await wait_until(handle, lambda s: s.stage == "pm_signoff", GET_STATE)
+            await handle.signal(FeatureRequestWorkflow.submit_pm_signoff, "approve")
+            await wait_until(handle, lambda s: s.stage == "deploy_approval", GET_STATE)
+            await handle.signal(FeatureRequestWorkflow.submit_deploy_approval, True)
+            result = await handle.result()
+
+    assert result.status == Status.SHIPPED
+    assert any("human override -> approved" in line for line in result.stage_log)
+
+
+@pytest.mark.asyncio
+async def test_deploy_declined_holds():
+    async with await WorkflowEnvironment.start_local(dev_server_existing_path=TEMPORAL_CLI) as env:
+        async with await _start(env, activities_with()):
+            event = feature_event()
+            handle = await env.client.start_workflow(
+                FeatureRequestWorkflow.run, event, id=event.id, task_queue=TASK_QUEUE
+            )
+            await handle.signal(FeatureRequestWorkflow.submit_human_vote, args=[True, "tester"])
+            await wait_until(handle, lambda s: s.stage == "pm_signoff", GET_STATE)
+            await handle.signal(FeatureRequestWorkflow.submit_pm_signoff, "approve")
+            await wait_until(handle, lambda s: s.stage == "deploy_approval", GET_STATE)
+            await handle.signal(FeatureRequestWorkflow.submit_deploy_approval, False)
+            result = await handle.result()
+
+    assert result.status == Status.HELD
+    assert "deploy" not in result.stage_log  # deploy activity never ran
+
+
+@pytest.mark.asyncio
+async def test_prd_loop_respects_cap():
+    async with await WorkflowEnvironment.start_local(dev_server_existing_path=TEMPORAL_CLI) as env:
+        activities = activities_with({"architect_review_prd": mock.architect_review_always_reject})
+        async with await _start(env, activities):
+            event = feature_event()
+            handle = await env.client.start_workflow(
+                FeatureRequestWorkflow.run, event, id=event.id, task_queue=TASK_QUEUE
+            )
+            await handle.signal(FeatureRequestWorkflow.submit_human_vote, args=[True, "tester"])
+            await wait_until(handle, lambda s: s.stage == "pm_signoff", GET_STATE)
+            await handle.signal(FeatureRequestWorkflow.submit_pm_signoff, "approve")
+            await wait_until(handle, lambda s: s.stage == "deploy_approval", GET_STATE)
+            await handle.signal(FeatureRequestWorkflow.submit_deploy_approval, True)
+            result = await handle.result()
+
+    # v1 + one revise per failed pass = MAX_PRD_PASSES revisions.
+    assert any("hit cap" in line for line in result.stage_log)
+    # The workflow still ships (proceeds with best-effort PRD), proving the loop is bounded.
+    assert result.status == Status.SHIPPED
+
+
+@pytest.mark.asyncio
+async def test_pm_revise_loops_back_then_approves():
+    async with await WorkflowEnvironment.start_local(dev_server_existing_path=TEMPORAL_CLI) as env:
+        async with await _start(env, activities_with()):
+            event = feature_event()
+            handle = await env.client.start_workflow(
+                FeatureRequestWorkflow.run, event, id=event.id, task_queue=TASK_QUEUE
+            )
+            await handle.signal(FeatureRequestWorkflow.submit_human_vote, args=[True, "tester"])
+
+            # First sign-off: request a revision.
+            await wait_until(handle, lambda s: s.stage == "pm_signoff", GET_STATE)
+            v1 = (await handle.query(GET_STATE)).prd_version
+            await handle.signal(FeatureRequestWorkflow.submit_pm_signoff, "revise")
+
+            # Workflow loops back through PRD revision + research, then re-enters sign-off
+            # with a bumped PRD version. Now approve.
+            await wait_until(
+                handle, lambda s: s.stage == "pm_signoff" and s.prd_version > v1, GET_STATE
+            )
+            await handle.signal(FeatureRequestWorkflow.submit_pm_signoff, "approve")
+            await wait_until(handle, lambda s: s.stage == "deploy_approval", GET_STATE)
+            await handle.signal(FeatureRequestWorkflow.submit_deploy_approval, True)
+            result = await handle.result()
+
+    assert result.status == Status.SHIPPED
+    assert result.stage_log.count("consumer_research") >= 2  # ran again after the revise
