@@ -7,7 +7,12 @@
     MODEL_PROVIDER=anthropic ./.venv/bin/python -m evals.run --persona triage --provider anthropic
 
 Reports CON (schema conformance), deterministic field-assertion pass rate, and dollar
-cost. Quality (LLM-judge) scoring is not wired yet — pending decision D5.
+cost. For subjective personas (e.g. pm_write_prd), pass `--judge` to also gate on the
+LLM-judge's must-have criteria (D5: judge calibrated against human labels, 0 false-pass).
+
+    # PRD-authoring with the judge gate (CON + assertions + judge must-haves):
+    set -a; . ./.env; set +a; MODEL_PROVIDER=vercel \
+        ./.venv/bin/python -m evals.run --persona pm_write_prd --provider vercel --judge
 """
 
 import argparse
@@ -35,6 +40,9 @@ def main() -> int:
     parser.add_argument("--cases", default=None, help="path to cases.jsonl")
     parser.add_argument("--min-pass", type=float, default=1.0,
                         help="min assertion pass-rate for exit 0 (D5 will set real bars)")
+    parser.add_argument("--judge", action="store_true",
+                        help="also gate on the LLM-judge's must-have criteria (subjective "
+                             "personas like pm_write_prd; needs a live provider). See evals/judge.py.")
     args = parser.parse_args()
 
     persona = get_persona(args.persona)
@@ -47,24 +55,60 @@ def main() -> int:
     else:
         provider = build_provider(args.provider)
 
-    report = run_eval(persona, profile, provider, cases)
+    # LLM-judge gate (D5): a per-case quality scorer that grades the produced PRD against the
+    # rubric in evals/judge.py. Aggregation (must-haves -> pass) lives in the judge, not the model.
+    judge_verdicts: dict = {}
+    quality_scorer = None
+    if args.judge:
+        if args.provider == "mock":
+            print("--judge needs a live provider (anthropic|vercel), not mock.")
+            return 2
+        from evals.judge import judge_prd
 
+        def quality_scorer(case, payload):  # closes over provider + judge_verdicts
+            content = getattr(payload, "content", None)
+            if content is None:
+                return None  # persona has no PRD prose to grade
+            verdict = judge_prd(provider, case.input, content)
+            judge_verdicts[case.id] = verdict
+            return verdict.score
+
+    report = run_eval(persona, profile, provider, cases, quality_scorer=quality_scorer)
+
+    jcol = f" {'judge':<7}" if args.judge else ""
     print(f"\neval: {report.persona}  ·  provider: {args.provider}  ·  {report.n} cases\n")
-    print(f"  {'case':<22} {'CON':<5} {'assert':<7} {'cost($)':<9} model")
+    print(f"  {'case':<22} {'CON':<5} {'assert':<7}{jcol} {'cost($)':<9} model")
     print("  " + "-" * 60)
     for r in report.results:
         con = "ok" if r.conforms else "FAIL"
         asrt = "ok" if r.passed else ("—" if not r.conforms else "FAIL")
+        jcell = ""
+        if args.judge:
+            v = judge_verdicts.get(r.id)
+            jcell = " " + (f"{'ok' if v.passed else 'FAIL'}({v.score:.2f})" if v else "—").ljust(7)
         fails = "" if r.passed or not r.conforms else \
             "  ← " + ", ".join(k for k, ok in r.assertions.items() if not ok)
-        print(f"  {r.id:<22} {con:<5} {asrt:<7} {r.cost_usd:<9.5f} {r.model}{fails}")
+        if args.judge and (v := judge_verdicts.get(r.id)) and not v.passed:
+            from evals.judge import _PRD_MUST_HAVE
+            fails += "  judge: " + ", ".join(k for k, ok in v.criteria.items()
+                                             if k in _PRD_MUST_HAVE and not ok)
+        print(f"  {r.id:<22} {con:<5} {asrt:<7}{jcell} {r.cost_usd:<9.5f} {r.model}{fails}")
 
     print("  " + "-" * 60)
+    judge_ok = True
+    judge_cost = 0.0
+    if args.judge:
+        judge_ok = bool(judge_verdicts) and all(v.passed for v in judge_verdicts.values())
+        judge_cost = sum(v.cost_usd for v in judge_verdicts.values())
     print(f"  CON rate: {report.con_rate:.0%}   assertion pass: {report.assertion_pass_rate:.0%}"
           f"   total: ${report.total_cost:.4f}   mean: ${report.mean_cost:.5f}")
-    print("  (quality/LLM-judge scoring pending decision D5)\n")
+    if args.judge:
+        passes = sum(1 for v in judge_verdicts.values() if v.passed)
+        print(f"  judge: {passes}/{len(judge_verdicts)} pass must-haves   "
+              f"judge cost: ${judge_cost:.4f}   combined: ${report.total_cost + judge_cost:.4f}")
+    print()
 
-    ok = report.con_rate == 1.0 and report.assertion_pass_rate >= args.min_pass
+    ok = report.con_rate == 1.0 and report.assertion_pass_rate >= args.min_pass and judge_ok
     return 0 if ok else 1
 
 

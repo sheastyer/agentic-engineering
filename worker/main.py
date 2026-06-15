@@ -32,14 +32,62 @@ def build_activities() -> list:
     """Stub activities by default ($0). Env toggles swap in real runner-backed ones, one
     at a time, as they're validated in M3 — the swap is by activity name."""
     activities = list(ALL_ACTIVITIES)
+    provider = os.environ.get("MODEL_PROVIDER", "anthropic")
+    if os.environ.get("USE_AGENT_BRIEF"):
+        from orchestrator.activities.agent_backed import pm_draft_brief_agent
+
+        activities = _replace_by_name(activities, "pm_draft_brief", pm_draft_brief_agent)
+        logging.info("USE_AGENT_BRIEF: real PM brief authoring (Opus) via MODEL_PROVIDER=%s", provider)
     if os.environ.get("USE_AGENT_TRIAGE"):
         from orchestrator.activities.agent_backed import triage_feedback_agent
 
-        activities = [a for a in activities if a.__name__ != "triage_feedback"]
-        activities.append(triage_feedback_agent)
-        logging.info("USE_AGENT_TRIAGE: real triage via MODEL_PROVIDER=%s",
-                     os.environ.get("MODEL_PROVIDER", "anthropic"))
+        activities = _replace_by_name(activities, "triage_feedback", triage_feedback_agent)
+        logging.info("USE_AGENT_TRIAGE: real triage via MODEL_PROVIDER=%s", provider)
+    if os.environ.get("USE_AGENT_COUNCIL"):
+        from orchestrator.activities.agent_backed import council_agent_vote_agent
+
+        activities = _replace_by_name(activities, "council_agent_vote", council_agent_vote_agent)
+        logging.info("USE_AGENT_COUNCIL: real council votes via MODEL_PROVIDER=%s", provider)
+    if os.environ.get("USE_AGENT_RESEARCH"):
+        from orchestrator.activities.agent_backed import consumer_research_persona_agent
+
+        activities = _replace_by_name(
+            activities, "consumer_research_persona", consumer_research_persona_agent
+        )
+        logging.info("USE_AGENT_RESEARCH: real synthetic-user panel via MODEL_PROVIDER=%s", provider)
+    if os.environ.get("USE_AGENT_PRD_REVISE"):
+        from orchestrator.activities.agent_backed import pm_revise_prd_agent
+
+        activities = _replace_by_name(activities, "pm_revise_prd", pm_revise_prd_agent)
+        logging.info("USE_AGENT_PRD_REVISE: real PRD revision via MODEL_PROVIDER=%s", provider)
+    if os.environ.get("USE_AGENT_PRD_AUTHOR"):
+        from orchestrator.activities.agent_backed import pm_write_prd_agent
+
+        activities = _replace_by_name(activities, "pm_write_prd", pm_write_prd_agent)
+        logging.info("USE_AGENT_PRD_AUTHOR: real PRD authoring (Opus) via MODEL_PROVIDER=%s", provider)
+    if os.environ.get("USE_AGENT_ARCH_REVIEW"):
+        from orchestrator.activities.agent_backed import architect_review_prd_agent
+
+        activities = _replace_by_name(activities, "architect_review_prd", architect_review_prd_agent)
+        logging.info("USE_AGENT_ARCH_REVIEW: real architect PRD review (Opus) via MODEL_PROVIDER=%s", provider)
+    if os.environ.get("USE_AGENT_STORY_PLAN"):
+        from orchestrator.activities.agent_backed import architect_plan_stories_agent
+
+        activities = _replace_by_name(activities, "architect_plan_stories", architect_plan_stories_agent)
+        logging.info("USE_AGENT_STORY_PLAN: real architect story planning (Opus) via MODEL_PROVIDER=%s", provider)
+    if os.environ.get("USE_AGENT_BUG_PRIORITY"):
+        from orchestrator.activities.agent_backed import pm_prioritize_bug_agent
+
+        activities = _replace_by_name(activities, "pm_prioritize_bug", pm_prioritize_bug_agent)
+        logging.info("USE_AGENT_BUG_PRIORITY: real PM bug prioritization (Haiku) via MODEL_PROVIDER=%s", provider)
     return activities
+
+
+def _replace_by_name(activities: list, stub_name: str, real_activity) -> list:
+    """Swap a stub activity for its runner-backed twin (matched by the stub's registered
+    activity name), keeping the rest of the list intact."""
+    kept = [a for a in activities if a.__name__ != stub_name]
+    return [*kept, real_activity]
 
 
 async def main() -> None:

@@ -51,6 +51,7 @@ class Brief:
     problem: str
     target_users: str
     ui_impacting: bool          # gates the conditional UX-mocks stage
+    project: str = ""           # Project Profile id, carried so later stages (council) keep context
     cost_tokens: int = 0
     cost_usd: float = 0.0
 
@@ -77,6 +78,7 @@ class PRD:
     version: int
     content: str
     open_issues: list[str] = field(default_factory=list)
+    project: str = ""           # Project Profile id, carried for downstream agent context
     cost_tokens: int = 0
     cost_usd: float = 0.0
 

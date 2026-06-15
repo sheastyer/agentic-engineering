@@ -77,6 +77,42 @@ class EvalReport:
         return round(self.total_cost / self.n, 6) if self.n else 0.0
 
 
+def _assert_field(actual: Any, spec: Any) -> bool:
+    """Evaluate one `expect` entry against the produced field value.
+
+    A scalar spec is exact-equality (the original behavior — covers enums/bools/ints). A
+    dict spec is an operator map for free-text fields where `==` doesn't fit (PRD prose,
+    injection-resistance). Supported ops (string compares are case-insensitive):
+      equals · contains · not_contains · contains_any · in · min_len · min_items
+    `contains`/`not_contains` accept a string or a list (all/none must match resp.);
+    `min_len` is string length, `min_items` is collection length.
+    """
+    if not isinstance(spec, dict):
+        return actual == spec
+    text = "" if actual is None else str(actual)
+    low = text.lower()
+    for op, arg in spec.items():
+        if op == "equals" and actual != arg:
+            return False
+        if op == "contains":
+            needles = arg if isinstance(arg, list) else [arg]
+            if not all(str(n).lower() in low for n in needles):
+                return False
+        if op == "not_contains":
+            needles = arg if isinstance(arg, list) else [arg]
+            if any(str(n).lower() in low for n in needles):
+                return False
+        if op == "contains_any" and not any(str(n).lower() in low for n in arg):
+            return False
+        if op == "in" and actual not in arg:
+            return False
+        if op == "min_len" and len(text) < arg:
+            return False
+        if op == "min_items" and len(actual or []) < arg:
+            return False
+    return True
+
+
 def load_cases(path: str | Path) -> list[EvalCase]:
     """Read a JSONL case file: one {id, input, expect} object per line."""
     cases = []
@@ -107,7 +143,8 @@ def run_eval(
                            cost_usd=0.0, model="", error=str(exc))
             )
             continue
-        checks = {k: getattr(result.payload, k, None) == v for k, v in case.expect.items()}
+        checks = {k: _assert_field(getattr(result.payload, k, None), v)
+                  for k, v in case.expect.items()}
         quality = quality_scorer(case, result.payload) if quality_scorer else None
         report.results.append(
             CaseResult(
@@ -148,20 +185,63 @@ def mock_payloads_from_cases(output_model: type[BaseModel], cases: list[EvalCase
 
 
 def _build_payload(model: type[BaseModel], expect: dict[str, Any]) -> BaseModel:
-    data = dict(expect)
+    data = {}
     for name, fld in model.model_fields.items():
-        if name not in data:
+        if name in expect:
+            data[name] = _mock_value(expect[name], fld.annotation)
+        else:
             data[name] = _default_for(fld.annotation)
     return model(**data)
 
 
+def _mock_value(spec: Any, annotation: Any) -> Any:
+    """Synthesize a field value that satisfies a mock case's `expect`. Scalars are used
+    directly; operator dicts get a best-effort satisfying value (so $0 plumbing runs stay
+    green for free-text personas too)."""
+    if not isinstance(spec, dict):
+        return spec
+    if "equals" in spec:
+        return spec["equals"]
+    if "in" in spec:
+        return spec["in"][0]
+    if "min_items" in spec:
+        return [_default_item(annotation) for _ in range(spec["min_items"])]
+    needles = []
+    for op in ("contains", "contains_any"):
+        if op in spec:
+            arg = spec[op]
+            needles += arg if isinstance(arg, list) else [arg]
+    if needles or "min_len" in spec:
+        base = " ".join(str(n) for n in needles)
+        pad = spec.get("min_len", 0) - len(base)
+        return base + (" " + "x" * pad if pad > 0 else "")  # satisfy contains_* AND min_len
+    return _default_for(annotation)
+
+
+def _default_item(annotation: Any) -> Any:
+    """A single mock element for a collection field. If the collection holds a nested model
+    (e.g. list[PlannedStory]), synthesize a schema-valid sub-instance; else a placeholder."""
+    args = get_args(annotation)
+    inner = args[0] if args else str
+    if isinstance(inner, type) and issubclass(inner, BaseModel):
+        return _build_payload(inner, {})
+    return _default_for(inner)
+
+
 def _default_for(annotation: Any) -> Any:
-    if get_origin(annotation) is Literal:
+    origin = get_origin(annotation)
+    if origin is Literal:
         return get_args(annotation)[0]
+    if origin in (list, tuple, set):
+        return []
+    if origin is dict:
+        return {}
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return _build_payload(annotation, {})  # nested model -> recurse
     if annotation is bool:
         return False
     if annotation is int:
-        return 0
+        return 1  # 1 (not 0) satisfies common ge=1 / positive-int constraints (e.g. estimate)
     if annotation is float:
         return 0.0
     return "(mock)"

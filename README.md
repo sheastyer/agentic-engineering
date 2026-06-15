@@ -150,11 +150,13 @@ The skeleton works and the agent layer is built — all proven for **$0 in token
 - ✅ **M0** — Temporal dev server + worker connected
 - ✅ **M1** — full feature + bug workflows on stubs: every gate, timer, bounded loop, child workflow, and replay determinism proven
 - ✅ **M2** — generic Agent Runner + **model-provider abstraction** (Anthropic Messages / Vercel gateway, swappable), persona registry, Project Profile loader, per-workflow **dollar budget gate**, workflow-purity lint. Closed live: real triage ran through the gateway inside a Temporal workflow, cost flowing through the budget cap.
-- ⏳ **M3** — swap stubs for real agents (cheapest first) behind eval gates; then the sandboxed engineering pod (M4) and real intake + human I/O (M5)
+- ✅ **M3 (substantially complete)** — every reasoning/judgment persona with real inputs is now a **live, eval-gated agent**, each behind its own `USE_AGENT_*` flag (off by default = $0 stubs). Feature path: brief → council (legal + sales) → PRD authoring → PRD review ⇄ revision → consumer research → story breakdown. Bug path: triage → prioritization. Cheapest-first across Haiku/Sonnet/Opus; each gated by a per-persona eval (schema conformance + deterministic assertions incl. injection-resistance + dollar cost), with an **LLM-judge** for subjective PRD prose (human-calibrated, zero false-pass). Per-call costs all far under the $3-feature / $0.50-bug ceilings.
+- ⏳ **M4** — the sandboxed **engineering pod** (Claude Agent SDK in isolated worktrees): the remaining stubs (`fix_bug`, `implement_story`, fix review, QA) are execution-plane coding work. Then **M5** — real intake adapters + human-I/O channel.
 
-40 tests green, ~9s. The discipline is deliberate: **prove the whole control flow with
-stubs before spending a single token on a model.** Full milestone plan, eval gates, and a
-**"Current state & how to continue" handoff** live in [`PLAN.md`](./PLAN.md).
+53 tests green, ~9s. The discipline is deliberate: **prove the whole control flow with
+stubs before spending a single token on a model**, then swap one persona at a time behind an
+eval gate. Full milestone plan, eval gates, and a **"Current state & how to continue"
+handoff** live in [`PLAN.md`](./PLAN.md).
 
 ---
 
@@ -176,10 +178,21 @@ Python 3.14, virtualenv at `.venv`. From the repo root:
 ```
 
 To use a **real model**: pick a provider with `MODEL_PROVIDER` (`anthropic` | `vercel`),
-put the matching key in `.env` (see `.env.example`), and set `USE_AGENT_TRIAGE=1` on the
-worker to run live triage. Note: the Claude.ai subscription does **not** fund the
-Anthropic Messages API — that path needs API credit; the Vercel gateway is the
-already-working alternative. Details in [`PLAN.md`](./PLAN.md).
+put the matching key in `.env` (see `.env.example`), and turn on whichever personas you
+want live with their `USE_AGENT_*` flags on the worker — e.g. `USE_AGENT_TRIAGE=1`,
+`USE_AGENT_COUNCIL=1`, `USE_AGENT_PRD_AUTHOR=1`, … (each persona has its own flag; unset =
+$0 stub). To validate a persona in isolation, run its eval, optionally with the judge:
+
+```bash
+# deterministic eval (CON + assertions + cost)
+set -a; . ./.env; set +a; MODEL_PROVIDER=vercel ./.venv/bin/python -m evals.run --persona council_legal --provider vercel
+# subjective-prose eval with the human-calibrated LLM-judge (PRD authoring)
+set -a; . ./.env; set +a; MODEL_PROVIDER=vercel ./.venv/bin/python -m evals.run --persona pm_write_prd --provider vercel --judge
+```
+
+Note: the Claude.ai subscription does **not** fund the Anthropic Messages API — that path
+needs API credit; the Vercel gateway is the already-working alternative. Details in
+[`PLAN.md`](./PLAN.md).
 
 ---
 

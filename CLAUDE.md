@@ -12,8 +12,9 @@
 > a new profile; no orchestration code changes. Read this fully before scaffolding.
 >
 > **▶ Continuing this work?** Read **[`PLAN.md`](./PLAN.md) → "Current state & how to
-> continue"** first — it has the live status (M0–M2 done, M3 next), how to run things,
-> the provider/billing reality, and the exact next steps. This file (CLAUDE.md) is the
+> continue"** first — it has the live status (M0–M2 done; M3 substantially complete — all
+> reasoning personas swapped to live, eval-gated agents; M4 engineering pod next), how to run
+> things, the provider/billing reality, and the exact next steps. This file (CLAUDE.md) is the
 > architecture + invariants reference; PLAN.md is the operational source of truth.
 
 ---
@@ -286,7 +287,9 @@ These are non-negotiable. If a task seems to require breaking one, stop and ask.
 The milestone sequence (M0–M5), the per-step **evaluation gates**, the standing
 regression suite, and the open-decisions tracker live in **[`PLAN.md`](./PLAN.md)** —
 the operational source of truth for what we build next and how we prove it's safe to
-continue. M0 (infra) and M1 (full skeleton on stubs) are complete.
+continue. M0 (infra), M1 (full skeleton on stubs), and M2 (agent runner + provider
+abstraction) are complete; M3 (swap stubs for live, eval-gated agents, cheapest-first) is
+substantially complete — every reasoning persona on the feature and bug paths is now real.
 
 Two principles from that plan are load-bearing and restated here: **do not call real
 models before M3** (prove orchestration on stubs first), and **a milestone is not done

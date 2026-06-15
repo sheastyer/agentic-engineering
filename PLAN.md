@@ -13,24 +13,36 @@
 
 ## Current state & how to continue (handoff — read first)
 
-**Status (2026-06-14):** M0, M1, M2 complete. **40 tests green** (~9s). The full agent
-stack has been run live. **Next up: M3** (swap stubs for real agents, cheapest-first,
-behind eval gates).
+**Status (2026-06-14):** M0, M1, M2 complete; **M3 substantially complete** — every
+reasoning/judgment persona with real inputs is now a live, eval-gated agent (feature path:
+brief→council→PRD-author→PRD-review↔revise→research→story-plan; bug path: triage→prioritize),
+each behind a `USE_AGENT_*` flag and live-validated. **53 tests green** (~9s). **Next up: M4**
+(sandboxed engineering pod via the Claude Agent SDK — the remaining stubs `fix_bug`,
+`implement_story`, `review_fix`, `qa_review` are execution-plane coding work).
 
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`
   & `EngineeringPod` children. All stages currently call **stub** activities
   (`orchestrator/activities/stubs.py`, zero LLM). Deterministic; replay-tested incl. children.
 - `orchestrator/agents/` — generic `AgentRunner` → `ModelProvider` interface →
-  `providers/{anthropic_provider, vercel_provider, factory}`. Personas in
-  `agents/registry/` (`triage`=Haiku, `pm_draft_brief`=Opus) with Pydantic output contracts.
+  `providers/{anthropic_provider, vercel_provider, factory}`. Personas in `agents/registry/`
+  with Pydantic output contracts: `triage`/`pm_prioritize_bug` (Haiku); `council_legal`,
+  `council_sales`, `consumer_researcher`, `pm_revise_prd` (Sonnet); `pm_draft_brief`,
+  `pm_write_prd`, `architect_review_prd`, `architect_plan_stories` (Opus).
 - `orchestrator/projects/` — Project Profile schema + loader + `meal-planner` profile.
 - Per-workflow **dollar budget gate** in the workflows ($3 feature / $0.50 bug), trips a
   `budget_override` human signal.
-- `orchestrator/activities/agent_backed.py` — runner-backed `triage` activity (the M3 swap
-  target), registered under the stub's name; `worker.build_activities()` swaps it in when
-  `USE_AGENT_TRIAGE=1`.
-- `evals/` — harness + `triage/cases.jsonl`; reports CON + deterministic assertions + cost.
+- `orchestrator/activities/agent_backed.py` — runner-backed activities for every swapped
+  persona above, each registered under its stub's name and adapting the Pydantic contract →
+  workflow dataclass (workflow-owned ids/versions/loop-counters set in the activity, not the
+  model). `worker.build_activities()` swaps each in via its own env flag (`USE_AGENT_BRIEF`,
+  `_TRIAGE`, `_COUNCIL`, `_RESEARCH`, `_PRD_AUTHOR`, `_PRD_REVISE`, `_ARCH_REVIEW`,
+  `_STORY_PLAN`, `_BUG_PRIORITY`; see `_replace_by_name`). Off by default = $0 stubs.
+- `evals/` — harness + a `cases.jsonl` per swapped persona; reports CON + deterministic
+  assertions (incl. injection-resistance cases) + cost. **Operator assertions** for free-text
+  fields (`contains`/`not_contains`/`contains_any`/`min_len`/`min_items`/`in`). **LLM-judge**
+  (`evals/judge.py`, `--judge`) for subjective prose (PRD authoring only), human-calibrated via
+  `evals/calibrate.py` (false-pass 0).
 - `temporal-feature-flow.html` — canonical flow diagram.
 
 **How to run (venv at `.venv`, Python 3.14):**
@@ -53,14 +65,53 @@ behind eval gates).
   optional subscription provider — that provider is **not built yet**.
 
 **Immediate next steps (M3):**
-1. **Resolve D5** (eval quality bar + assertions-vs-LLM-judge) — the harness's `QualityScorer`
-   hook is waiting; deterministic assertion + cost checks already work.
-2. Swap stubs for real agents **cheapest-first**: triage (done, behind `USE_AGENT_TRIAGE`) →
-   council/PRD-revision/synthetic-users (Sonnet) → PRD-authoring/architecture/story-planning
-   (Opus). For each: author the persona (registry entry + Pydantic contract), add a
-   runner-backed activity adapting the contract → workflow dataclass (pattern:
-   `agent_backed.py`), gate the worker swap on an env flag, validate with `evals.run` +
-   `COST` band, keep R1–R6 green.
+1. ✅ **D5 resolved + implemented** (assertions-first; LLM-judge only for subjective personas
+   w/ human calibration; per-persona bar, user-confirmed). Deterministic assertion + cost checks
+   work; the `QualityScorer` hook is now **wired** via `--judge` (first subjective persona,
+   PRD-authoring, landed — judge calibrated, false-pass 0).
+2. Swap stubs for real agents **cheapest-first**. **Done (all live-validated 2026-06-14):**
+   triage (Haiku, `USE_AGENT_TRIAGE`); council votes (Sonnet, `USE_AGENT_COUNCIL` —
+   `council_legal`+`council_sales`, 100% CON/assert incl. injection, ~$0.003/vote);
+   synthetic-users (Sonnet, `USE_AGENT_RESEARCH` — `consumer_researcher`, 3/3 incl.
+   discrimination + injection, ~$0.003/finding); PRD-revision (Sonnet, `USE_AGENT_PRD_REVISE`
+   — `pm_revise_prd`, assertion-first incl. injection, ~$0.007/revision; version/identity set
+   in the activity, only prose from the model). **PRD-authoring (Opus, `USE_AGENT_PRD_AUTHOR`
+   — `pm_write_prd`): live gate run 3/3 CON+assert+**judge** must-haves (incl. injection),
+   ~$0.075/PRD authoring + ~$0.023/judge ≈ $0.098/case, well under the $3 ceiling; id/version
+   minted in the activity, only prose from the model.** **Architect cluster (Opus): PRD-review
+   (`USE_AGENT_ARCH_REVIEW` — `architect_review_prd`, 3/3 CON+assert, rejects deficient PRDs with
+   actionable concerns + resists injection, ~$0.018/review; `pass_no` owned by the activity) and
+   story-planning (`USE_AGENT_STORY_PLAN` — `architect_plan_stories`, 3/3, ≥2 sliced stories with
+   schema-bounded estimates + injection-resistant, ~$0.010/plan; story ids minted in the activity).
+   No judge for these two — their outputs are structurally checkable (bool+concerns, titles+bounded
+   estimates), so deterministic assertions are the right gate (judge is reserved for free prose).**
+   **PM brief authoring (Opus, `USE_AGENT_BRIEF` — `pm_draft_brief`, feature-path stage 1): 3/3
+   CON+assert, judges `ui_impacting` correctly both ways (gates the conditional UX-mocks stage) +
+   resists injection, ~$0.007/brief (cheap — short structured output); project carried from the
+   event. No judge (short structured brief; assertions suffice).** **→ THE ENTIRE FEATURE-PATH
+   REASONING CHAIN IS NOW REAL: brief → council → PRD-author → PRD-review ↔ PRD-revise → research →
+   story-plan, all behind `USE_AGENT_*` flags, every stage live-validated.** **Bug path: PM bug
+   prioritization (Haiku, `USE_AGENT_BUG_PRIORITY` — `pm_prioritize_bug`): 3/3 CON+assert, buckets
+   severity correctly (critical→P0/P1, cosmetic→P2/P3) + resists injection (no forced escalation, no
+   leak), ~$0.0008/call; sees the triage read as context. `review_fix` is **deliberately NOT
+   LLM-backed** — at the orchestration layer it receives only a `StoryResult` (pr_ref + status), with
+   no diff to review; real fix review belongs in **M4** (engineering pod, where there's a diff).
+   `dedupe_check`/`synthesize_research` stay deterministic by design.** **→ EVERY reasoning/judgment
+   persona with real inputs is now a live agent, each eval-gated; the only remaining stubs are M4
+   coding work (`fix_bug`, `implement_story`, `review_fix`, `qa_review`) and the profile-driven
+   `deploy`/`ux_generate_mocks`.** For any future swap: author the persona (registry entry + Pydantic
+   contract), add a runner-backed activity adapting the contract → workflow dataclass (pattern:
+   `agent_backed.py`), gate the worker swap on an env flag, validate with `evals.run` + `COST` band,
+   keep R1–R6 green.
+
+   LLM-judge (D5, built): `evals/judge.py` grades concrete criteria with aggregation **in code**
+   (must-haves → pass), reserved for subjective personas. Calibrated against 6 human-labeled
+   candidates (`evals/calibrate.py generate|judge`, `evals/pm_write_prd/calibration.jsonl`):
+   **agreement 5/6, false-pass 0, the one miss a safe-direction false-fail** — trustworthy as a
+   gate. Wired into the CLI: `evals.run --persona pm_write_prd --provider vercel --judge` (gate =
+   CON==100% ∧ operator-assertions ∧ judge must-haves per case). Harness also supports **operator
+   assertions** for free-text fields (`contains`/`not_contains`/`contains_any`/`min_len`/`in`;
+   scalar `expect` still = equality).
 3. Keep the Messages-API-vs-Vercel default per **D10** (Messages API) once API credit exists.
 
 **Open decisions blocking later milestones:** D5 (M3 quality), D6 (M4 deploy meaning),
@@ -308,7 +359,7 @@ move fast on later milestones.
 | D2 | Model IDs + pricing | M2 | ✅ `claude-haiku-4-5` $1/$5 · `claude-sonnet-4-6` $3/$15 · `claude-opus-4-8` $5/$25 (per 1M tok) |
 | D3 | Billing path | M2/M4 | ✅ **API credits / pay-as-you-go** (verified live 2026-06-14: Claude.ai subscription does NOT fund the Developer-Platform API — `400 credit balance too low`). Need Console API credits regardless of OAuth-vs-key; Vercel gateway is an alt with its own billing |
 | D4 | Repo handling — managed per-run workspace | M4 | ✅ yes (per-run workspace) |
-| D5 | Eval thresholds + judge approach (assertions vs LLM-judge) | M3 | open |
+| D5 | Eval thresholds + judge approach (assertions vs LLM-judge) | M3 | ✅ **Assertions-first**: deterministic assertions + injection fixtures + cost bands for every persona; LLM-judge (+ human-labeled calibration set & judge/human agreement reporting) reserved for genuinely subjective personas only (PRD authoring, architecture review, story planning). **Bar:** per-persona threshold with documented rationale, proposed per swap and user-confirmed (no blanket 0.8). |
 | D6 | What "deploy" means for meal-planner (PR / merge / container) | M4 | open |
 | D7 | Per-workflow budget ceiling + consumer-research panel size | M2/M3 | ✅ **$3/feature, $0.50/bug** (lean — gate will trip on real coding, which is desired for a tiny app); panel N=4, 1 iteration |
 | D8 | Council governance: human vote is **decisive (veto/override)**, agents advisory | M1 | ✅ resolved (red-team P1-3) |
@@ -325,7 +376,10 @@ move fast on later milestones.
   cost** (per-case + aggregate). `--provider mock` runs $0 (synthesizes schema-valid
   payloads); `--provider anthropic|vercel` runs live. Exit code gates on CON=100% +
   assertion pass ≥ `--min-pass`.
-- ⏳ **Pending D5** — the subjective **quality / LLM-judge** dimension is a pluggable
-  `QualityScorer` hook, intentionally unwired until thresholds + judge approach are set.
+- ✅ **D5 set (assertions-first)** — the subjective **quality / LLM-judge** dimension stays a
+  pluggable `QualityScorer` hook, wired only for genuinely subjective personas (PRD authoring,
+  architecture review, story planning) with a human-labeled calibration set + judge/human
+  agreement reporting. Assertion + injection + cost checks gate every persona; the bar is
+  per-persona with documented rationale, confirmed at each swap.
 - CI target: `pytest` (R1/R2/R3) + secret scan (R4) on every change; `evals/run.py` on
   persona changes; cost report archived per run so regressions are visible over time.

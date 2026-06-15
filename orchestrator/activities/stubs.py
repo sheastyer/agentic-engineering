@@ -12,6 +12,7 @@ allowed here — but the stubs deliberately do neither.
 
 from temporalio import activity
 
+from orchestrator.shared.ids import feature_id as _feature_id
 from orchestrator.shared.types import (
     ArchitectReview,
     Brief,
@@ -42,6 +43,7 @@ async def pm_draft_brief(event: FeedbackEvent) -> Brief:
         problem="(stub) the problem this feature addresses",
         target_users="(stub) primary user segment",
         ui_impacting=True,  # stub takes the UX-mocks branch; tests can flip this
+        project=event.project,
         cost_tokens=120,
     )
 
@@ -64,6 +66,7 @@ async def pm_write_prd(brief: Brief) -> PRD:
         version=1,
         content=f"(stub) PRD v1 for {brief.summary}",
         open_issues=[],
+        project=brief.project,
         cost_tokens=400,
     )
 
@@ -86,6 +89,7 @@ async def pm_revise_prd(prd: PRD, review: ArchitectReview) -> PRD:
         version=prd.version + 1,
         content=f"(stub) PRD v{prd.version + 1} addressing: {', '.join(review.concerns) or 'feedback'}",
         open_issues=[],
+        project=prd.project,
         cost_tokens=250,
     )
 
@@ -190,12 +194,6 @@ async def fix_bug(event: FeedbackEvent) -> StoryResult:
 @activity.defn
 async def review_fix(fix: StoryResult) -> ReviewResult:
     return ReviewResult(approved=fix.status == "done", notes="(stub) LGTM", cost_tokens=120)
-
-
-# --- helpers --------------------------------------------------------------------
-def _feature_id(summary: str) -> str:
-    slug = "".join(c if c.isalnum() else "-" for c in summary.lower()).strip("-")
-    return f"feat-{slug[:32]}"
 
 
 # Registered with the worker. Adding an activity = appending here.
