@@ -43,6 +43,12 @@ class Workspace:
         self.source = os.path.expanduser(source)
         self.test_command = test_command
         self.from_git = from_git
+        # Two seams, by trust level:
+        #  • `_host` runs the org's own git plumbing (clone, baseline, diff) on org-controlled
+        #    paths — trusted, so it stays on the host (and the sandbox image needs no git).
+        #  • `sandbox` runs the *target's* test command — repo-authored, untrusted, so it is
+        #    the pluggable boundary (LocalSandbox to prove the loop; ContainerSandbox for D9).
+        self._host: Sandbox = LocalSandbox()
         self.sandbox: Sandbox = sandbox or LocalSandbox()
         self.path: str | None = None        # the repo checkout, set on __enter__
         self._root: str | None = None        # the temp dir we own and remove
@@ -51,7 +57,7 @@ class Workspace:
         self._root = tempfile.mkdtemp(prefix="agentic-ws-")
         dest = os.path.join(self._root, "repo")
         if self.from_git:
-            self.sandbox.run(f"git clone --depth 1 {_q(self.source)} {_q(dest)}", cwd=self._root)
+            self._host.run(f"git clone --depth 1 {_q(self.source)} {_q(dest)}", cwd=self._root)
         else:
             shutil.copytree(self.source, dest)
         self.path = dest
@@ -70,7 +76,7 @@ class Workspace:
         """Guarantee a git HEAD to diff against — init+commit if the source isn't a repo."""
         assert self.path is not None
         if not os.path.isdir(os.path.join(self.path, ".git")):
-            self.sandbox.run(
+            self._host.run(
                 f"git init -q && git add -A && git {_GIT_ID} commit -q -m baseline --allow-empty",
                 cwd=self.path,
             )
@@ -92,7 +98,7 @@ class Workspace:
     def diff(self) -> str:
         """Unified diff of all changes since the baseline (staged so new files show)."""
         assert self.path is not None, "workspace not entered"
-        return self.sandbox.run("git add -A && git diff --cached HEAD", cwd=self.path).output
+        return self._host.run("git add -A && git diff --cached HEAD", cwd=self.path).output
 
 
 def _q(path: str) -> str:

@@ -17,8 +17,9 @@
 reasoning/judgment persona with real inputs is now a live, eval-gated agent (feature path:
 brief→council→PRD-author→PRD-review↔revise→research→story-plan; bug path: triage→prioritize),
 each behind a `USE_AGENT_*` flag and live-validated. **M4 in progress** — the
-execution-plane **coding loop is proven at $0** on a seeded-bug fixture (see "M4 progress"
-below). **58 tests green** (~10s).
+execution-plane **coding loop is proven at $0** on a seeded-bug fixture, live-validated on
+the Claude subscription, and now runs the test command in a real **ContainerSandbox** with a
+passing escape negative-test (see "M4 progress" below). **66 tests green** (~11s).
 
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`
@@ -123,8 +124,8 @@ below). **58 tests green** (~10s).
   plane's provider abstraction. `CodingAgent` interface (async `implement(task, workspace)`);
   a `Workspace` (managed per-run checkout — copy/clone, baseline commit for diffing, runs
   the *target's own* test command, always torn down); a pluggable `Sandbox` seam
-  (`LocalSandbox` now — explicitly **not** isolation; `ContainerSandbox` is the owed D9
-  hardening); a `$0` deterministic `MockCodingAgent`; the real `ClaudeSDKCodingAgent`
+  (`LocalSandbox` for trusted fixtures; `ContainerSandbox` for real isolation — see below);
+  a `$0` deterministic `MockCodingAgent`; the real `ClaudeSDKCodingAgent`
   (Claude Agent SDK — `query` with `cwd`/`allowed_tools`/`max_turns`/`max_budget_usd`,
   reports SDK `total_cost_usd`); `factory.build_coding_agent()` (`CODING_AGENT` env,
   no-op default); pure pod fns `implement_and_verify` / `run_qa` (workspace lifecycle = one
@@ -142,13 +143,27 @@ below). **58 tests green** (~10s).
   (default `acceptEdits`; `bypassPermissions` for non-interactive sandbox runs). Surfaced +
   fixed a real bug: the workspace now excludes transient build artifacts (`__pycache__`,
   `*.pyc`, …) from the diff so they can't pollute a PR (regression-tested at $0).
-- **Still owed before the M4 exit gate** (not yet done): (1) **ContainerSandbox** + the
-  SEC **sandbox-escape negative-test** (D9 — `LocalSandbox` is a stand-in); (2) **wire into Temporal**:
+- **ContainerSandbox ✅ + SEC escape negative-test ✅ (2026-06-17, D9):** real Docker
+  execution boundary for the *untrusted* test command — `docker run --rm`, mounts **only**
+  the workspace at `/work`, `--network none` by default, **empty container env** (only
+  `env={…}` secrets cross), all caps dropped + `no-new-privileges` + pid/mem/cpu caps.
+  Workspace now splits **trusted prep** (clone/baseline/diff — host git plumbing, so the
+  image needs no git) from **untrusted execution** (the test command, sandboxed); `factory.
+  build_sandbox()` selects it via `CODING_SANDBOX` (default `local`). `tests/test_sandbox_
+  isolation.py` (+7, docker-gated) drives hostile commands and asserts all three escape
+  vectors are *prevented* (host FS outside mount unreadable, host env secret doesn't cross,
+  network egress blocked), a positive control, a `LocalSandbox` contrast (it leaks all three
+  — why the boundary exists), and the seeded fix **verified inside the container** with the
+  host source left pristine. *Remaining D9 nuance:* the SDK agent's own Bash tool still runs
+  on the host today — containing the agent **process** (run `claude` in-container, or the
+  SDK's native SandboxSettings) is tracked below as part of the Temporal wiring.
+- **Still owed before the M4 exit gate** (not yet done): (1) **wire into Temporal**:
   agent-backed `implement_story`/`fix_bug` + `qa_review`, gated by env flag (M3 pattern),
-  which needs **project propagation into the pod** (`StoryPlan`/`Story` carry no `project`
-  today → R6 contract change) and a **longer activity timeout** (the 30s default is far too
-  short for coding); (3) **PR open + merge side-effects** with idempotency keys; (4)
-  cost/story COST bands + injection fixtures for the coding pod.
+  running the pod under `CODING_SANDBOX=container` (incl. containing the agent process, not
+  just the test command), which needs **project propagation into the pod** (`StoryPlan`/
+  `Story` carry no `project` today → R6 contract change) and a **longer activity timeout**
+  (the 30s default is far too short for coding); (2) **PR open + merge side-effects** with
+  idempotency keys; (3) cost/story COST bands + injection fixtures for the coding pod.
 
 **Open decisions blocking later milestones:** D1 (M5 human-I/O channel). D5/D6 resolved.
 See the Decisions tracker at the bottom.

@@ -7,13 +7,14 @@ agent loop bounded by `max_turns` and `max_budget_usd` (§10), scoped to the wor
 
 The `claude_agent_sdk` import is lazy so the package (the `[agent-sdk]` extra) is only
 required when this agent actually runs — mock-driven tests need neither the package nor
-auth. **Live-validation pending API credit** (the Messages API path is blocked today, D3);
-the loop itself is proven at $0 via `MockCodingAgent`.
+auth. **Live-validated 2026-06-16** on the Claude subscription (no API credit): fixed the
+seeded fixture bug, QA green, ~$0.12; the loop is also proven at $0 via `MockCodingAgent`.
 
-Sandbox note: `cwd` scopes the working directory but is NOT isolation on its own. The
-caller is responsible for running this inside a `ContainerSandbox` (D9) before feeding it
-untrusted input; the SDK also exposes native `SandboxSettings`, a candidate for that
-hardening.
+Sandbox note: `cwd` scopes the working directory but is NOT isolation on its own, and the
+agent's Bash tool currently runs on the **host**. `ContainerSandbox` (D9) already contains
+the *test command* Workspace runs; containing the agent **process** itself (run `claude`
+in-container, or the SDK's native `SandboxSettings`) is the remaining hardening before this
+agent is pointed at untrusted input — tracked in PLAN.md M4.
 """
 
 import os

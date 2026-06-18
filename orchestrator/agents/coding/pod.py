@@ -10,6 +10,7 @@ for any story whose verdict is a fail — orchestration stays in the workflow, e
 """
 
 from orchestrator.agents.coding.agent import CodingAgent
+from orchestrator.agents.coding.sandbox import Sandbox
 from orchestrator.agents.coding.types import CodingOutcome, CodingTask, QAOutcome
 from orchestrator.agents.coding.workspace import Workspace
 
@@ -27,13 +28,17 @@ async def implement_and_verify(
     source: str,
     *,
     from_git: bool = False,
+    sandbox: Sandbox | None = None,
 ) -> tuple[CodingOutcome, QAOutcome]:
     """One coding attempt in a fresh, disposable workspace; verified by the target's tests.
 
     The workspace is context-managed, so it is always torn down (§9.6 cleanup) even if the
-    agent or test run raises.
+    agent or test run raises. `sandbox` is the boundary the *target's test command* runs in
+    (a `ContainerSandbox` for untrusted input — D9); it defaults to local for trusted fixtures.
     """
-    with Workspace(source, test_command=task.test_command, from_git=from_git) as ws:
+    with Workspace(
+        source, test_command=task.test_command, from_git=from_git, sandbox=sandbox
+    ) as ws:
         outcome = await agent.implement(task, ws)
         qa = run_qa(ws)
     return outcome, qa
