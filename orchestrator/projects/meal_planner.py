@@ -36,8 +36,11 @@ PROFILE = ProjectProfile(
     # Placeholders until M5 — meal-planner uses Next.js + Drizzle/Postgres, so feedback
     # will most likely surface as a DB table the intake adapter polls.
     intake=Intake(kind=IntakeKind.DB_TABLE, descriptor="feedback"),
-    # Placeholder until M4/M6 — start by opening a PR against the repo.
-    deploy=Deploy(kind=DeployKind.OPEN_PR, descriptor="default-branch PR"),
+    # D6 (resolved 2026-06-16): deploy = open + merge PR. The engineering pod opens a PR
+    # against the repo (so humans review the real diff); on the deploy-approval gate the
+    # deploy activity merges it to the default branch. Both side-effects carry an
+    # idempotency key (M4) so a Temporal retry can't double-open/double-merge.
+    deploy=Deploy(kind=DeployKind.MERGE, descriptor="open PR in pod; merge to default branch on deploy approval"),
     conventions=[
         "TypeScript + Next.js (App Router); Drizzle ORM over Postgres.",
         "Match existing code style; keep changes minimal and focused.",

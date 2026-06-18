@@ -13,12 +13,12 @@
 
 ## Current state & how to continue (handoff — read first)
 
-**Status (2026-06-14):** M0, M1, M2 complete; **M3 substantially complete** — every
+**Status (2026-06-16):** M0, M1, M2 complete; **M3 substantially complete** — every
 reasoning/judgment persona with real inputs is now a live, eval-gated agent (feature path:
 brief→council→PRD-author→PRD-review↔revise→research→story-plan; bug path: triage→prioritize),
-each behind a `USE_AGENT_*` flag and live-validated. **53 tests green** (~9s). **Next up: M4**
-(sandboxed engineering pod via the Claude Agent SDK — the remaining stubs `fix_bug`,
-`implement_story`, `review_fix`, `qa_review` are execution-plane coding work).
+each behind a `USE_AGENT_*` flag and live-validated. **M4 in progress** — the
+execution-plane **coding loop is proven at $0** on a seeded-bug fixture (see "M4 progress"
+below). **58 tests green** (~10s).
 
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`
@@ -114,8 +114,44 @@ each behind a `USE_AGENT_*` flag and live-validated. **53 tests green** (~9s). *
    scalar `expect` still = equality).
 3. Keep the Messages-API-vs-Vercel default per **D10** (Messages API) once API credit exists.
 
-**Open decisions blocking later milestones:** D5 (M3 quality), D6 (M4 deploy meaning),
-D1 (M5 human-I/O channel). See the Decisions tracker at the bottom.
+**M4 progress (started 2026-06-16) — execution-plane coding loop, proven at $0:**
+- **Decisions locked:** D6 = **open + merge PR** (pod opens a PR, `deploy` merges on the
+  gate; both side-effects idempotent) — `meal-planner` profile now `deploy.kind = MERGE`.
+  Kickoff approach = **fixture-repo vertical slice first** (prove the loop before pointing
+  at the real meal-planner).
+- **Built (`orchestrator/agents/coding/`):** the execution plane, mirroring the reasoning
+  plane's provider abstraction. `CodingAgent` interface (async `implement(task, workspace)`);
+  a `Workspace` (managed per-run checkout — copy/clone, baseline commit for diffing, runs
+  the *target's own* test command, always torn down); a pluggable `Sandbox` seam
+  (`LocalSandbox` now — explicitly **not** isolation; `ContainerSandbox` is the owed D9
+  hardening); a `$0` deterministic `MockCodingAgent`; the real `ClaudeSDKCodingAgent`
+  (Claude Agent SDK — `query` with `cwd`/`allowed_tools`/`max_turns`/`max_budget_usd`,
+  reports SDK `total_cost_usd`); `factory.build_coding_agent()` (`CODING_AGENT` env,
+  no-op default); pure pod fns `implement_and_verify` / `run_qa` (workspace lifecycle = one
+  activity — code + verify share one checkout, since a temp dir can't survive across
+  stateless activities; the bounded QA→fix loop stays in the workflow).
+- **Fixture (`tests/fixtures/seeded_repo/`):** a throwaway lib with a seeded `add` bug +
+  `verify.py` (named so the top-level run won't auto-collect it) + `TASK.md`.
+- **Proven (`tests/test_coding_pod.py`, +5 tests, $0):** seeded-fix **positive** (correct
+  edit → target tests pass), **negative QA** (no-op attempt caught — no false green), the
+  bug genuinely fails first (non-vacuous), and workspace **cleanup** on both success and
+  exception. R1–R6 green.
+- **Live SDK validation ✅ (2026-06-16):** `ClaudeSDKCodingAgent` ran on the fixture via
+  the `claude` CLI on the **Claude subscription** (no API credit; no `ANTHROPIC_API_KEY` in
+  env), found+fixed the seeded bug, QA went green, ~$0.12. Knobs: `CODING_PERMISSION_MODE`
+  (default `acceptEdits`; `bypassPermissions` for non-interactive sandbox runs). Surfaced +
+  fixed a real bug: the workspace now excludes transient build artifacts (`__pycache__`,
+  `*.pyc`, …) from the diff so they can't pollute a PR (regression-tested at $0).
+- **Still owed before the M4 exit gate** (not yet done): (1) **ContainerSandbox** + the
+  SEC **sandbox-escape negative-test** (D9 — `LocalSandbox` is a stand-in); (2) **wire into Temporal**:
+  agent-backed `implement_story`/`fix_bug` + `qa_review`, gated by env flag (M3 pattern),
+  which needs **project propagation into the pod** (`StoryPlan`/`Story` carry no `project`
+  today → R6 contract change) and a **longer activity timeout** (the 30s default is far too
+  short for coding); (3) **PR open + merge side-effects** with idempotency keys; (4)
+  cost/story COST bands + injection fixtures for the coding pod.
+
+**Open decisions blocking later milestones:** D1 (M5 human-I/O channel). D5/D6 resolved.
+See the Decisions tracker at the bottom.
 
 ---
 
@@ -360,7 +396,7 @@ move fast on later milestones.
 | D3 | Billing path | M2/M4 | ✅ **API credits / pay-as-you-go** (verified live 2026-06-14: Claude.ai subscription does NOT fund the Developer-Platform API — `400 credit balance too low`). Need Console API credits regardless of OAuth-vs-key; Vercel gateway is an alt with its own billing |
 | D4 | Repo handling — managed per-run workspace | M4 | ✅ yes (per-run workspace) |
 | D5 | Eval thresholds + judge approach (assertions vs LLM-judge) | M3 | ✅ **Assertions-first**: deterministic assertions + injection fixtures + cost bands for every persona; LLM-judge (+ human-labeled calibration set & judge/human agreement reporting) reserved for genuinely subjective personas only (PRD authoring, architecture review, story planning). **Bar:** per-persona threshold with documented rationale, proposed per swap and user-confirmed (no blanket 0.8). |
-| D6 | What "deploy" means for meal-planner (PR / merge / container) | M4 | open |
+| D6 | What "deploy" means for meal-planner (PR / merge / container) | M4 | ✅ **Open + merge PR** (resolved 2026-06-16): the engineering pod opens a PR (humans review the real diff); the `deploy` activity merges to the default branch on the deploy-approval gate. Both side-effects carry an idempotency key. Profile `deploy.kind = MERGE`. |
 | D7 | Per-workflow budget ceiling + consumer-research panel size | M2/M3 | ✅ **$3/feature, $0.50/bug** (lean — gate will trip on real coding, which is desired for a tiny app); panel N=4, 1 iteration |
 | D8 | Council governance: human vote is **decisive (veto/override)**, agents advisory | M1 | ✅ resolved (red-team P1-3) |
 | D9 | Engineering-pod isolation: **container per run** (not bare worktree) | M4 | ✅ resolved (red-team P1-6) |
