@@ -269,6 +269,7 @@ def plan_stories_with_runner(provider: ModelProvider, prd: PRD, report: Research
     return StoryPlan(
         feature_id=prd.feature_id,
         stories=stories,
+        project=prd.project,  # carried so the engineering pod can load the target profile
         cost_tokens=result.input_tokens + result.output_tokens,
         cost_usd=result.cost_usd,
     )

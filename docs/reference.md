@@ -67,7 +67,7 @@ blocking poll).
 | 5 | **Consumer research** | `consumer_researcher` × N demographics | Sonnet | `ResearchFindingOutput` | Child workflow, **parallel fan-out** (§4). |
 | 6 | 🧑 **PM sign-off** | — | — | — | `revise` loops back into PRD revision, bounded by `MAX_SIGNOFF_REVISIONS` (2). |
 | 7 | `architect_plan_stories` | `architect_plan_stories` | Opus | `StoryPlanOutput` | PRD → independently shippable stories with effort estimates. |
-| 8 | **Engineering pod** | coding agent per story (Claude Agent SDK) | — | — | Child workflow, **orchestrator-worker** (§4). |
+| 8 | **Engineering pod** | coding agent per story (Claude Agent SDK) | — | — | Child workflow, **orchestrator-worker** (§4). Codes, QAs, and **opens a PR**. |
 | 9 | 🧑 **Deploy approval** | — | — | — | Then `deploy` via the profile's deploy target → `SHIPPED`. |
 
 Two things worth internalizing from this table:
@@ -148,11 +148,14 @@ classic multi-agent pattern:
   (`DEFAULT_RESEARCH_PERSONAS` — budget-conscious, time-constrained professional, power
   user, first-time user) is bounded by the caller-supplied list. Findings persist detail
   to storage and return lightweight references, not raw transcripts.
-- **`EngineeringPodWorkflow` — orchestrator-worker.** Fans stories out to worker
-  activities that each run a coding agent — the **Claude Agent SDK** in a sandboxed git
-  worktree — then runs QA, with one bounded QA→fix pass (`MAX_QA_FIX_PASSES`) to
-  re-implement any failing stories. Deploy is deliberately *not* here — it sits behind the
-  parent's human approval gate.
+- **`EngineeringPodWorkflow` — orchestrator-worker.** Codes up to `CODING_MAX_STORIES`
+  stories (default 1 — the cost guard; the rest come back as `$0` "deferred" markers) via
+  worker activities that each run a coding agent — the **Claude Agent SDK** in a disposable
+  clone — then runs QA (one bounded `MAX_QA_FIX_PASSES` fix pass), and finally **opens a PR**
+  from the assembled diffs through a pluggable `PRTarget` (`orchestrator/agents/coding/pr_target.py`:
+  `local` clones/applies/commits a dry-run branch with no push; `github` pushes + `gh pr create`).
+  A coding error returns a *failed* story rather than raising, so it's never retried at full
+  cost. Deploy/merge is deliberately *not* here — it sits behind the parent's human gate.
 
 ---
 
@@ -225,8 +228,20 @@ All of these are set in `.env` (copy `.env.example`).
 | `MODEL_PROVIDER` | always | `anthropic` (default) or `vercel` — picks the backend. |
 | `ANTHROPIC_API_KEY` | `anthropic` provider | Direct API key (pay-as-you-go). Unset = use the Claude subscription OAuth profile — which **does not** fund the Messages API, so a key/credit is needed in practice. |
 | `AI_GATEWAY_API_KEY` | `vercel` provider | Vercel AI Gateway key. (`VERCEL_OIDC_TOKEN` is an alternative.) |
+| `USE_AGENT_*` | optional | Swap a stubbed stage for its live agent — `_TRIAGE _BRIEF _COUNCIL _PRD_AUTHOR _ARCH_REVIEW _PRD_REVISE _RESEARCH _STORY_PLAN _BUG_PRIORITY`, plus `USE_AGENT_CODING` for the engineering pod. Unset = `$0` stubs. |
+| `CODING_AGENT` | with `USE_AGENT_CODING` | `mock` (default, `$0`) or `claude` — the Claude Agent SDK, which draws on the Claude **subscription** (no `ANTHROPIC_API_KEY`). |
+| `CODING_SANDBOX` | with `USE_AGENT_CODING` | `local` (default) or `container` — where the target's *test command* runs (Docker, for untrusted repo code). |
+| `CODING_PR_TARGET` | with `USE_AGENT_CODING` | `local` (default — clone/apply/commit a dry-run branch, **no push**) or `github` — push the branch + `gh pr create`. |
+| `CODING_PERMISSION_MODE` | with `CODING_AGENT=claude` | SDK permission mode; `bypassPermissions` for non-interactive pod runs. |
 | `TEMPORAL_TARGET` | optional | Override the dev-server address (default `localhost:7233`). |
 | `<PROFILE secret_refs>` | per project | The env-var names a Project Profile points at (e.g. `MEALPLANNER_GITHUB_TOKEN`) — the *values*, never stored in the profile. |
+
+> **Running the real coding pod from inside a Claude Code session?** The worker's spawned
+> `claude` subprocess inherits this session's env (`CLAUDECODE`, `CLAUDE_CODE_*`) and fails
+> with `error result: success` (nested-session collision). Launch the worker with them
+> stripped — `env -u CLAUDECODE -u CLAUDE_CODE_SSE_PORT -u CLAUDE_CODE_SESSION_ID
+> -u CLAUDE_CODE_CHILD_SESSION … python -m worker.main`. Auth lives in `~/.claude`, so
+> stripping is safe.
 
 ---
 
@@ -258,7 +273,10 @@ All the org-wide dials live in `orchestrator/shared/config.py`. The ones you'll 
 |---|---|---|
 | `MAX_PRD_PASSES` | 3 | PRD ⇄ architect review loop |
 | `MAX_SIGNOFF_REVISIONS` | 2 | PM sign-off → PRD revision loopback |
-| `MAX_QA_FIX_PASSES` | 1 | engineering-pod QA → fix loop |
+| `MAX_QA_FIX_PASSES` | 0 | engineering-pod QA → fix loop (0 while the example target's tests can't run in the sandbox — a fix pass can't go green, so it would just double cost; set 1 when QA can pass) |
+| `CODING_MAX_STORIES` | 1 | stories the pod codes per run (rest → `$0` "deferred"); the real fan-out / cost guard |
+| `CODING_MAX_TURNS` / `CODING_MAX_BUDGET_USD` | 40 / $1.50 | per coding-attempt hard caps handed to the SDK (high enough to *finish* a small feature) |
+| `CODING_ACTIVITY_TIMEOUT_MINUTES` | 20 | coding/PR activities run minutes, not the 180s reasoning default |
 | `BUDGET_USD` | feature $3 / bug $0.50 | per-workflow dollar ceiling → human gate |
 | `COUNCIL_TIMEOUT_HOURS` | 72 | human council vote before agent-majority fallback |
 | `SIGNOFF` / `DEPLOY` / `CLARIFICATION` / `BUDGET_OVERRIDE` `_TIMEOUT_DAYS` | 7 | each human gate's timeout |

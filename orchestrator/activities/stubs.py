@@ -23,6 +23,7 @@ from orchestrator.shared.types import (
     FeedbackKind,
     Mocks,
     PRD,
+    PRResult,
     QAResult,
     ResearchFinding,
     ResearchReport,
@@ -129,16 +130,20 @@ async def architect_plan_stories(prd: PRD, report: ResearchReport) -> StoryPlan:
         Story(id=f"{prd.feature_id}-S1", title="(stub) backend slice", estimate=3),
         Story(id=f"{prd.feature_id}-S2", title="(stub) frontend slice", estimate=2),
     ]
-    return StoryPlan(feature_id=prd.feature_id, stories=stories, cost_tokens=350)
+    return StoryPlan(
+        feature_id=prd.feature_id, stories=stories, project=prd.project, cost_tokens=350
+    )
 
 
 @activity.defn
-async def implement_story(story: Story) -> StoryResult:
-    # Stub for the Agent SDK coding run (M4). Always "done" in M1.
+async def implement_story(story: Story, project: str) -> StoryResult:
+    # Stub for the Agent SDK coding run (M4). Always "done" in M1. `project` is unused by
+    # the stub but required for signature parity with the agent-backed twin (same name).
     return StoryResult(
         story_id=story.id,
         status="done",
         pr_ref=f"pr://{story.id}",
+        summary="(stub) implemented",
         cost_tokens=800,
     )
 
@@ -151,6 +156,13 @@ async def qa_review(story_results: list[StoryResult]) -> QAResult:
         notes="(stub) all checks green" if all_done else "(stub) failing stories",
         cost_tokens=150,
     )
+
+
+@activity.defn
+async def open_pr(project: str, branch: str, story_results: list[StoryResult]) -> PRResult:
+    # Stub for the pod's PR-open step (M4). The agent-backed twin clones the target, applies
+    # the story diffs, and opens a real (or local dry-run) PR. Always "opened" in M1.
+    return PRResult(opened=True, url=f"local://pr/{branch}", branch=branch, cost_tokens=10)
 
 
 @activity.defn
@@ -209,6 +221,7 @@ ALL_ACTIVITIES = [
     architect_plan_stories,
     implement_story,
     qa_review,
+    open_pr,
     deploy,
     triage_feedback,
     dedupe_check,

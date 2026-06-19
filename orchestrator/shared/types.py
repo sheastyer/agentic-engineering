@@ -138,6 +138,7 @@ class Story:
 class StoryPlan:
     feature_id: str
     stories: list[Story]
+    project: str = ""           # Project Profile id, carried so the pod can load the target repo
     cost_tokens: int = 0
     cost_usd: float = 0.0
 
@@ -147,6 +148,8 @@ class StoryResult:
     story_id: str
     status: str                 # "done" | "failed"
     pr_ref: str
+    diff: str = ""              # unified diff the pod produced (assembled into the PR)
+    summary: str = ""           # short note on what the coding attempt did
     cost_tokens: int = 0
     cost_usd: float = 0.0
 
@@ -164,6 +167,20 @@ class PodResult:
     story_results: list[StoryResult]
     qa: QAResult
     branch: str
+    pr_url: str = ""            # the PR the pod opened (or a local dry-run ref)
+    cost_tokens: int = 0
+    cost_usd: float = 0.0
+
+
+@dataclass
+class PRResult:
+    """What the PR-open step produced — the pod's terminal artifact (a PR, or a local
+    dry-run stand-in). `opened` is False when there were no changes to open a PR for."""
+
+    opened: bool
+    url: str = ""
+    branch: str = ""
+    note: str = ""
     cost_tokens: int = 0
     cost_usd: float = 0.0
 

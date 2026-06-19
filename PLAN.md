@@ -13,13 +13,17 @@
 
 ## Current state & how to continue (handoff — read first)
 
-**Status (2026-06-16):** M0, M1, M2 complete; **M3 substantially complete** — every
-reasoning/judgment persona with real inputs is now a live, eval-gated agent (feature path:
+**Status (2026-06-19):** M0, M1, M2, **M3 complete** — every reasoning/judgment persona with
+real inputs is a live, eval-gated agent (feature path:
 brief→council→PRD-author→PRD-review↔revise→research→story-plan; bug path: triage→prioritize),
-each behind a `USE_AGENT_*` flag and live-validated. **M4 in progress** — the
-execution-plane **coding loop is proven at $0** on a seeded-bug fixture, live-validated on
-the Claude subscription, and now runs the test command in a real **ContainerSandbox** with a
-passing escape negative-test (see "M4 progress" below). **66 tests green** (~11s).
+each behind a `USE_AGENT_*` flag and live-validated. **M4 substantially complete** — the
+execution-plane coding pod is **wired into Temporal** behind `USE_AGENT_CODING` (agent-backed
+`implement_story`/`fix_bug`/`open_pr`), runs the Claude Agent SDK on the subscription in a
+**ContainerSandbox**, and was **validated end-to-end on 2026-06-19**: a dark-mode feature
+request drove the whole feature path and opened a **real GitHub PR** (meal-planner #3) for
+~$0.34 coding + ~$0.25 reasoning. Coding-pod **cost controls** added after a runaway run
+(single-story cap, no-retry-on-failure, per-attempt turn/budget caps — see "M4 progress").
+**72 tests green** (~12s).
 
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`
@@ -157,13 +161,32 @@ passing escape negative-test (see "M4 progress" below). **66 tests green** (~11s
   host source left pristine. *Remaining D9 nuance:* the SDK agent's own Bash tool still runs
   on the host today — containing the agent **process** (run `claude` in-container, or the
   SDK's native SandboxSettings) is tracked below as part of the Temporal wiring.
-- **Still owed before the M4 exit gate** (not yet done): (1) **wire into Temporal**:
-  agent-backed `implement_story`/`fix_bug` + `qa_review`, gated by env flag (M3 pattern),
-  running the pod under `CODING_SANDBOX=container` (incl. containing the agent process, not
-  just the test command), which needs **project propagation into the pod** (`StoryPlan`/
-  `Story` carry no `project` today → R6 contract change) and a **longer activity timeout**
-  (the 30s default is far too short for coding); (2) **PR open + merge side-effects** with
-  idempotency keys; (3) cost/story COST bands + injection fixtures for the coding pod.
+- **Temporal wiring ✅ + live steel-thread shakedown (2026-06-18):** the coding pod is wired
+  into Temporal — agent-backed `implement_story`/`fix_bug`/`open_pr` behind `USE_AGENT_CODING`
+  (M3 swap-by-name), `StoryPlan.project` propagated (R6 contract bump, defaulted), 20-min
+  coding timeout, and a **pluggable `PRTarget`** (`LocalPRTarget` dry-run default, off-by-default
+  `GitHubPRTarget`). A dark-mode feature was driven end-to-end against meal-planner via
+  `cli.run` (reasoning live on the **Vercel gateway**, coding on the **Claude subscription**).
+  The orchestration ran clean — brief → council → full PRD↔architect loop (real rejections +
+  revisions) → research → sign-off → story plan → pod — and the coding plane was proven in
+  isolation (real, mergeable dark-mode diff: theme-toggle + Tailwind dark variant). **72 tests
+  green.** Five runtime issues found & fixed along the way: (1) reasoning activity timeout 30s→180s
+  (Opus PRD authoring); (2) `pm_revise_prd` truncation — 3072→8192 max_tokens (it re-emits the
+  whole PRD; confirmed via exact-repro); (3) CLI driver died on transient query races (now
+  resilient); (4) live `architect_plan_stories` didn't set `StoryPlan.project` (the stub did);
+  (5) the pod's spawned `claude` inherited *this* Claude Code session's env (`CLAUDECODE`, …) →
+  nested-session error — must launch the worker with those stripped (`env -u CLAUDECODE …`).
+- **Coding-pod cost controls ✅ (2026-06-18, §10):** the pod dominates a feature's cost and runs
+  on the subscription's 5-hour window, so: a coding error now returns a **failed** story instead
+  of raising (was retried 4×, each retry a full coding run — the main spend leak); `CODING_MAX_STORIES`
+  (default **1**) caps how many stories code per run (rest = $0 `deferred` markers → no fan-out of
+  parallel agents); `CODING_MAX_TURNS=8` / `CODING_MAX_BUDGET_USD=0.25` hard-cap each attempt;
+  pod defaults to the **mock** agent ($0) unless `CODING_AGENT=claude`. Tested at $0.
+- **Still owed before the M4 exit gate:** (1) **one cheap real pod run** (single capped agent)
+  once the subscription window resets, to land an actual PR via the thread; (2) root-cause the
+  *parallel* (>1 concurrent) `claude` "error result: success" — single-agent works, so deferred,
+  not blocking; (3) **PR merge** side-effect with idempotency keys (open is done; merge is the
+  human-gated deploy step); (4) cost/story COST bands + injection fixtures.
 
 **Open decisions blocking later milestones:** D1 (M5 human-I/O channel). D5/D6 resolved.
 See the Decisions tracker at the bottom.

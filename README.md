@@ -234,6 +234,16 @@ API credit, which a Claude.ai subscription does not cover). The model tiers, the
 abstraction, and the complete env reference are in
 [`docs/reference.md` → Model providers](./docs/reference.md#6-model-providers--bring-your-own-backend).
 
+**Turning on the real engineering pod.** By default the run is reasoning-only (the coding
+step is stubbed, `$0`). Set `USE_AGENT_CODING=1 CODING_AGENT=claude` and the pod runs the
+**Claude Agent SDK** to actually write the code, then opens a PR — `CODING_PR_TARGET=local`
+for a no-push dry run, or `github` to push the branch and `gh pr create`. It's bounded by
+construction (one story, hard per-attempt turn/budget caps). Driven end-to-end on 2026-06-19,
+a single *"add a dark mode toggle"* feedback opened a real
+[meal-planner PR](https://github.com/sheastyer/meal-planner/pull/3) for ~$0.34 of coding. The
+coding env vars (and one gotcha about running it from inside a Claude Code session) are in
+[`docs/reference.md` → env vars](./docs/reference.md#6-model-providers--bring-your-own-backend).
+
 **Onboarding your own app** is the same flow with a Project Profile you write —
 see [Using it on your own app](#using-it-on-your-own-app) above.
 

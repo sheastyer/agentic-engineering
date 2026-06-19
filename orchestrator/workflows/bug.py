@@ -19,6 +19,7 @@ with workflow.unsafe.imports_passed_through():
         BUDGET_OVERRIDE_TIMEOUT_DAYS,
         BUDGET_USD,
         CLARIFICATION_TIMEOUT_DAYS,
+        CODING_ACTIVITY_TIMEOUT_MINUTES,
         DEPLOY_TIMEOUT_DAYS,
     )
     from orchestrator.shared.types import (
@@ -28,6 +29,10 @@ with workflow.unsafe.imports_passed_through():
         WorkflowState,
     )
     from orchestrator.workflows.common import run_activity
+
+# The fix step runs a real coding agent (agent-backed fix_bug) — minutes, not the 30s
+# reasoning default. Deterministic (a constant timedelta).
+_CODING_TIMEOUT = timedelta(minutes=CODING_ACTIVITY_TIMEOUT_MINUTES)
 
 
 class _BudgetHalt(Exception):
@@ -96,7 +101,7 @@ class BugWorkflow:
                 self._log.append("clarification timed out; proceeding with original report")
 
         await self._act(act.pm_prioritize_bug, event, triage, stage="pm_prioritize")
-        fix = await self._act(act.fix_bug, event, stage="fix")
+        fix = await self._act(act.fix_bug, event, stage="fix", timeout=_CODING_TIMEOUT)
         await self._act(act.review_fix, fix, stage="review")
         await self._act(act.qa_review, [fix], stage="qa")
 
@@ -142,9 +147,9 @@ class BugWorkflow:
         self._log.append("budget override declined; halting")
         raise _BudgetHalt()
 
-    async def _act(self, fn, *args, stage: str):
+    async def _act(self, fn, *args, stage: str, timeout=None):
         self._enter(stage)
-        result = await run_activity(fn, *args)
+        result = await run_activity(fn, *args, timeout=timeout)
         self._cost += getattr(result, "cost_tokens", 0)
         self._cost_usd += getattr(result, "cost_usd", 0.0)
         await self._check_budget()

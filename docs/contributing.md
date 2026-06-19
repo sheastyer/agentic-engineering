@@ -77,6 +77,7 @@ its own `USE_AGENT_*` env flag; set the flag and the worker swaps the stub for i
 | `USE_AGENT_RESEARCH` | real synthetic-user panel (Sonnet) |
 | `USE_AGENT_STORY_PLAN` | real story planning (Opus) |
 | `USE_AGENT_BUG_PRIORITY` | real bug prioritization (Haiku) |
+| `USE_AGENT_CODING` | real engineering pod — `implement_story`/`fix_bug`/`open_pr` via the Claude Agent SDK (`CODING_AGENT=claude`); see the coding env vars in [reference.md §6](./reference.md#6-model-providers--bring-your-own-backend) |
 
 Why bother with two implementations? It lets you **prove the entire control flow on free
 stubs**, then bring personas live **one at a time, each behind its own eval gate** — instead
@@ -87,9 +88,9 @@ provider at runtime.
 
 > Two load-bearing rules from [`PLAN.md`](../PLAN.md): **don't call real models before a
 > persona's eval passes**, and **a milestone isn't done until its exit gate is green** (its
-> evals + the standing regression suite). The current build status — including which
-> execution-plane pieces (the engineering pod; live intake/deploy adapters) are still
-> stubbed — lives in PLAN.md.
+> evals + the standing regression suite). The current build status lives in PLAN.md — as of
+> 2026-06-19 the engineering pod (`USE_AGENT_CODING`) is wired and was driven end-to-end to a
+> real PR; live intake/deploy adapters remain stubbed (M5).
 
 ---
 

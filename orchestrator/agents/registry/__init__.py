@@ -178,7 +178,7 @@ REGISTRY: dict[str, Persona] = {
         system_template=_PRD_REVISE_PROMPT,
         output_model=contracts.PRDRevisionOutput,
         effort="medium",
-        max_tokens=3072,
+        max_tokens=8192,  # re-emits the FULL revised PRD; 3072 truncated mid-JSON (finish=length)
     ),
     "pm_write_prd": Persona(
         name="pm_write_prd",
@@ -186,7 +186,7 @@ REGISTRY: dict[str, Persona] = {
         system_template=_PRD_AUTHOR_PROMPT,
         output_model=contracts.PRDAuthoringOutput,
         effort="high",
-        max_tokens=4096,
+        max_tokens=8192,  # full PRD body; headroom so a large doc can't truncate
     ),
     "architect_review_prd": Persona(
         name="architect_review_prd",
@@ -194,7 +194,7 @@ REGISTRY: dict[str, Persona] = {
         system_template=_ARCHITECT_REVIEW_PROMPT,
         output_model=contracts.ArchitectReviewOutput,
         effort="high",
-        max_tokens=2048,
+        max_tokens=3072,  # a list of concerns; headroom for a thorough review
     ),
     "architect_plan_stories": Persona(
         name="architect_plan_stories",
@@ -202,7 +202,7 @@ REGISTRY: dict[str, Persona] = {
         system_template=_ARCHITECT_PLAN_PROMPT,
         output_model=contracts.StoryPlanOutput,
         effort="high",
-        max_tokens=2048,
+        max_tokens=4096,  # multiple stories with titles/estimates
     ),
 }
 

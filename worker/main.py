@@ -80,6 +80,24 @@ def build_activities() -> list:
 
         activities = _replace_by_name(activities, "pm_prioritize_bug", pm_prioritize_bug_agent)
         logging.info("USE_AGENT_BUG_PRIORITY: real PM bug prioritization (Haiku) via MODEL_PROVIDER=%s", provider)
+    if os.environ.get("USE_AGENT_CODING"):
+        from orchestrator.activities.coding_backed import (
+            fix_bug_agent,
+            implement_story_agent,
+            open_pr_agent,
+        )
+
+        activities = _replace_by_name(activities, "implement_story", implement_story_agent)
+        activities = _replace_by_name(activities, "fix_bug", fix_bug_agent)
+        activities = _replace_by_name(activities, "open_pr", open_pr_agent)
+        logging.info(
+            "USE_AGENT_CODING: real coding pod — agent=%s sandbox=%s pr_target=%s "
+            "(coding draws on the Claude subscription; reasoning via MODEL_PROVIDER=%s)",
+            os.environ.get("CODING_AGENT", "mock"),
+            os.environ.get("CODING_SANDBOX", "local"),
+            os.environ.get("CODING_PR_TARGET", "local"),
+            provider,
+        )
     return activities
 
 

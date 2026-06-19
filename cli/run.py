@@ -24,34 +24,73 @@ from orchestrator.workflows.bug import BugWorkflow
 from orchestrator.workflows.feature_request import FeatureRequestWorkflow
 
 
-async def wait_for_stage(handle: WorkflowHandle, query, stage: str, timeout: float = 15.0) -> bool:
-    """Poll the workflow's get_state query until it reports the given stage."""
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        state = await handle.query(query)
-        if state.stage == stage:
-            return True
-        await asyncio.sleep(0.25)
-    return False
-
-
 async def drive_feature(handle: WorkflowHandle) -> None:
+    """Gate-reactive driver: stream new log lines as the workflow advances and play the
+    human at every gate that appears (council, budget override, PM sign-off, deploy). Each
+    gate is signalled once; for the happy steel-thread path that's all it takes."""
     q = FeatureRequestWorkflow.get_state
-    await wait_for_stage(handle, q, "exec_council")
-    await handle.signal(FeatureRequestWorkflow.submit_human_vote, args=[True, "cli-human"])
-    print("  ✓ council: human voted APPROVE")
-    await wait_for_stage(handle, q, "pm_signoff")
-    await handle.signal(FeatureRequestWorkflow.submit_pm_signoff, "approve")
-    print("  ✓ PM sign-off: APPROVE")
-    await wait_for_stage(handle, q, "deploy_approval")
-    await handle.signal(FeatureRequestWorkflow.submit_deploy_approval, True)
-    print("  ✓ deploy approval: APPROVE")
+    done = {"council": False, "budget": False, "signoff": False, "deploy": False}
+    seen = 0
+    misses = 0
+    while True:
+        try:
+            state = await handle.query(q)
+            misses = 0
+        except Exception:
+            # A query can transiently fail (task expiry races on the dev server). Don't
+            # treat that as terminal — keep polling. Only give up after many in a row
+            # (the workflow is genuinely gone), letting main() surface the real result.
+            misses += 1
+            if misses > 50:
+                break
+            await asyncio.sleep(0.6)
+            continue
+        for line in state.log[seen:]:
+            print(f"   · {line}")
+        seen = len(state.log)
+        stage = state.stage
+
+        if stage == "exec_council" and not done["council"]:
+            await handle.signal(FeatureRequestWorkflow.submit_human_vote, args=[True, "cli-human"])
+            print("  ✓ council: human voted APPROVE")
+            done["council"] = True
+        elif stage.startswith("budget_gate") and not done["budget"]:
+            await handle.signal(FeatureRequestWorkflow.submit_budget_decision, True)
+            print(f"  ✓ budget override: APPROVE  ({stage})")
+            done["budget"] = True
+        elif stage == "pm_signoff" and not done["signoff"]:
+            await handle.signal(FeatureRequestWorkflow.submit_pm_signoff, "approve")
+            print("  ✓ PM sign-off: APPROVE")
+            done["signoff"] = True
+        elif stage == "deploy_approval" and not done["deploy"]:
+            await handle.signal(FeatureRequestWorkflow.submit_deploy_approval, True)
+            print("  ✓ deploy approval: APPROVE")
+            done["deploy"] = True
+
+        if stage == "done":
+            break
+        await asyncio.sleep(1.0)
 
 
 async def drive_bug(handle: WorkflowHandle) -> None:
-    await wait_for_stage(handle, BugWorkflow.get_state, "deploy_approval")
-    await handle.signal(BugWorkflow.submit_deploy_approval, True)
-    print("  ✓ deploy approval: APPROVE")
+    q = BugWorkflow.get_state
+    done = {"deploy": False}
+    seen = 0
+    while True:
+        try:
+            state = await handle.query(q)
+        except Exception:
+            break
+        for line in state.log[seen:]:
+            print(f"   · {line}")
+        seen = len(state.log)
+        if state.stage == "deploy_approval" and not done["deploy"]:
+            await handle.signal(BugWorkflow.submit_deploy_approval, True)
+            print("  ✓ deploy approval: APPROVE")
+            done["deploy"] = True
+        if state.stage == "done":
+            break
+        await asyncio.sleep(1.0)
 
 
 async def main() -> None:

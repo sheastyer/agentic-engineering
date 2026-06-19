@@ -8,7 +8,25 @@ TASK_QUEUE = "agentic-org"
 # Bounded-loop caps (CLAUDE.md §10 — every agent<->agent loop has an explicit cap).
 MAX_PRD_PASSES = 3          # PRD <-> architect review loop
 MAX_SIGNOFF_REVISIONS = 2   # PM sign-off -> PRD revision loopback
-MAX_QA_FIX_PASSES = 1       # engineering pod QA -> fix loop
+MAX_QA_FIX_PASSES = 0       # engineering pod QA -> fix loop (0 for the offline meal-planner: its tests can't run in the sandbox, so a fix pass can never go green and would just double coding cost; set 1 when the target has runnable tests)
+
+# Engineering-pod activities run a real coding agent + the target's tests in a sandbox —
+# far longer than the 30s default for reasoning activities (common.py). Minutes, not seconds.
+CODING_ACTIVITY_TIMEOUT_MINUTES = 20
+
+# Coding-pod cost controls (CLAUDE.md §10 — the pod dominates a feature's cost). The agent
+# runs on the Claude subscription, so an uncapped pod can drain the 5-hour usage window:
+#  • CODING_MAX_STORIES — how many stories the pod actually codes per run; the rest are
+#    recorded as "deferred" (a $0 marker), so a feature can't spawn N parallel agents.
+#  • CODING_MAX_TURNS / CODING_MAX_BUDGET_USD — hard per-attempt caps handed to the SDK.
+# Constants (no env) so the workflow stays deterministic; the per-attempt caps are read
+# activity-side in coding_backed. Single story is the real spend guard (no parallel-agent
+# fan-out, no retry storm); the per-attempt caps must still be high enough for the agent to
+# *finish* — too low (e.g. $0.25/8 turns) and it stops mid-task with no committable diff, so
+# the PR comes up empty. ~$1.50/40 turns completed a real dark-mode change with headroom.
+CODING_MAX_STORIES = 1
+CODING_MAX_TURNS = 40
+CODING_MAX_BUDGET_USD = 1.50
 
 # Per-workflow budget ceilings in USD (CLAUDE.md §10, decision D7). Lean on purpose:
 # the gate is expected to trip on real coding (M4) for a small app, forcing human review.
