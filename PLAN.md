@@ -61,6 +61,27 @@ now **persisted** (Temporal `--db-filename` + `cli.trace --save` → SQLite). **
   worker `set -a; . ./.env; set +a; USE_AGENT_TRIAGE=1 MODEL_PROVIDER=vercel ./.venv/bin/python -m worker.main`,
   then `./.venv/bin/python -m cli.run --bug`. (Source `.env` in the *same* command — shell
   state doesn't persist between Bash calls. Killing the bg processes exits 144 = normal.)
+- **Full feature thread → real PR + persisted traces (the recipe used 2026-06-19, PR #4):**
+  ```bash
+  # 1. persistent Temporal (history survives restarts; .localdata is gitignored)
+  ~/.temporalio/bin/temporal server start-dev --db-filename .localdata/temporal-dev.db &
+  # 2. worker — reasoning on Vercel, coding on the Claude SUBSCRIPTION. The `env -u …` is
+  #    REQUIRED when launching from inside a Claude Code session: the spawned `claude` inherits
+  #    CLAUDECODE/CLAUDE_CODE_* and errors with "error result: success" otherwise.
+  set -a; . ./.env; set +a
+  env -u CLAUDECODE -u CLAUDE_CODE_SSE_PORT -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION \
+      -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u AI_AGENT -u CLAUDE_EFFORT -u ANTHROPIC_API_KEY \
+    MODEL_PROVIDER=vercel USE_AGENT_BRIEF=1 USE_AGENT_COUNCIL=1 USE_AGENT_PRD_AUTHOR=1 \
+      USE_AGENT_PRD_REVISE=1 USE_AGENT_ARCH_REVIEW=1 USE_AGENT_RESEARCH=1 USE_AGENT_STORY_PLAN=1 \
+      USE_AGENT_CODING=1 CODING_AGENT=claude CODING_SANDBOX=container CODING_PR_TARGET=github \
+      CODING_PERMISSION_MODE=bypassPermissions ./.venv/bin/python -m worker.main &
+  # 3. drive it (auto-approves the human gates); then persist + read the reasoning trace
+  ./.venv/bin/python -u -m cli.run --title "Add a dark mode theme toggle to the app"
+  ./.venv/bin/python -m cli.trace <workflow-id> --save .localdata/artifacts.db
+  ```
+  Notes: `CODING_PR_TARGET=local` for a no-push dry run; the meal-planner target should be on
+  `main` for a clean PR base; `bypassPermissions` needs the user's OK (autonomous host agent).
+  A full chronological trace of this exact run is in [`docs/walkthrough-dark-mode.md`](./docs/walkthrough-dark-mode.md).
 
 **Provider / billing reality (important):**
 - Default `MODEL_PROVIDER=anthropic` (Messages API) — but the user's Anthropic org has **no

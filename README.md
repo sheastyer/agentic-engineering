@@ -131,6 +131,13 @@ handing work to agents.
 > the model tier it runs on, the activities, the swappable model providers, and the config
 > knobs that bound cost. Start there once the *why* above clicks.
 
+> **Want to see one real run, end to end?** [`docs/walkthrough-dark-mode.md`](./docs/walkthrough-dark-mode.md)
+> is a chronological, verbatim trace of the org taking *"add a dark mode toggle"* from feedback to an
+> [opened pull request](https://github.com/sheastyer/meal-planner/pull/4) — the PM brief, the council
+> votes, the **three rounds** of architect review that hardened the PRD, the synthetic-user panel, the
+> story breakdown, and the code. Every artifact is quoted from the persisted trace, so you can read
+> exactly what each agent produced.
+
 ---
 
 ## Why bother — what you actually get
@@ -255,6 +262,7 @@ see [Using it on your own app](#using-it-on-your-own-app) above.
 |---|---|
 | `README.md` | This file — the vision and the *why*. |
 | [`docs/reference.md`](./docs/reference.md) | The build, end to end — workflows, personas, activities, providers, config, onboarding, verifiability. |
+| [`docs/walkthrough-dark-mode.md`](./docs/walkthrough-dark-mode.md) | A verbatim, chronological trace of one real run (feedback → PR), with every agent's artifact. |
 | [`docs/contributing.md`](./docs/contributing.md) | For working *on* the org — dev setup, the test suite, the eval harness, and how to add a persona. |
 | [`CLAUDE.md`](./CLAUDE.md) | Architecture & the hard invariants. |
 | [`PLAN.md`](./PLAN.md) | Roadmap and build notes. |
