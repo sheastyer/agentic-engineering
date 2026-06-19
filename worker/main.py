@@ -83,11 +83,11 @@ def build_activities() -> list:
     if os.environ.get("USE_AGENT_CODING"):
         from orchestrator.activities.coding_backed import (
             fix_bug_agent,
-            implement_story_agent,
+            implement_stories_agent,
             open_pr_agent,
         )
 
-        activities = _replace_by_name(activities, "implement_story", implement_story_agent)
+        activities = _replace_by_name(activities, "implement_stories", implement_stories_agent)
         activities = _replace_by_name(activities, "fix_bug", fix_bug_agent)
         activities = _replace_by_name(activities, "open_pr", open_pr_agent)
         logging.info(

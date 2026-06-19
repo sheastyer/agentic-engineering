@@ -15,18 +15,15 @@ MAX_QA_FIX_PASSES = 0       # engineering pod QA -> fix loop (0 for the offline 
 CODING_ACTIVITY_TIMEOUT_MINUTES = 20
 
 # Coding-pod cost controls (CLAUDE.md §10 — the pod dominates a feature's cost). The agent
-# runs on the Claude subscription, so an uncapped pod can drain the 5-hour usage window:
-#  • CODING_MAX_STORIES — how many stories the pod actually codes per run; the rest are
-#    recorded as "deferred" (a $0 marker), so a feature can't spawn N parallel agents.
-#  • CODING_MAX_TURNS / CODING_MAX_BUDGET_USD — hard per-attempt caps handed to the SDK.
-# Constants (no env) so the workflow stays deterministic; the per-attempt caps are read
-# activity-side in coding_backed. Single story is the real spend guard (no parallel-agent
-# fan-out, no retry storm); the per-attempt caps must still be high enough for the agent to
-# *finish* — too low (e.g. $0.25/8 turns) and it stops mid-task with no committable diff, so
-# the PR comes up empty. ~$1.50/40 turns completed a real dark-mode change with headroom.
-CODING_MAX_STORIES = 1
-CODING_MAX_TURNS = 40
-CODING_MAX_BUDGET_USD = 1.50
+# runs on the Claude subscription, so an uncapped pod can drain the 5-hour usage window. The
+# real spend guards are structural: ONE agent implements the whole feature in one workspace
+# (no parallel-agent fan-out), and a coding error returns a failed story instead of raising
+# (no Temporal retry storm — see coding_backed). The per-attempt caps below still bound that
+# one agent, but must be high enough for it to *finish* — too low (e.g. $0.25/8 turns) and it
+# stops mid-task with no committable diff, so the PR comes up empty. ~$1.50/40 turns completed
+# a real dark-mode change with headroom. Read activity-side, so plain constants are fine.
+CODING_MAX_TURNS = 70
+CODING_MAX_BUDGET_USD = 2.50
 
 # Per-workflow budget ceilings in USD (CLAUDE.md §10, decision D7). Lean on purpose:
 # the gate is expected to trip on real coding (M4) for a small app, forcing human review.

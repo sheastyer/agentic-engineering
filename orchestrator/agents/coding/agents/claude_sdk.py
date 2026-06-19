@@ -72,15 +72,22 @@ class ClaudeSDKCodingAgent:
         cost_usd = 0.0
         in_tok = out_tok = 0
         summary = ""
-        async for message in query(prompt=_prompt(task), options=options):
-            if isinstance(message, ResultMessage):
-                cost_usd = float(message.total_cost_usd or 0.0)
-                in_tok, out_tok = _usage_tokens(message.usage)
-                summary = (message.result or "").strip()[:500]
+        stopped = ""
+        try:
+            async for message in query(prompt=_prompt(task), options=options):
+                if isinstance(message, ResultMessage):
+                    cost_usd = float(message.total_cost_usd or 0.0)
+                    in_tok, out_tok = _usage_tokens(message.usage)
+                    summary = (message.result or "").strip()[:500]
+        except Exception as exc:  # noqa: BLE001
+            # The SDK raises on a budget/turn limit (or a transient error). The agent edits
+            # files *as it goes*, so capture whatever it completed instead of discarding the
+            # whole run — a budget cap should be a soft stop with a partial diff, not a wipe.
+            stopped = f" [agent stopped early: {str(exc)[:120]}]"
 
         diff = workspace.diff()
         return CodingOutcome(
-            summary=summary or "(agent produced no summary)",
+            summary=(summary + stopped) or "(agent produced no summary)",
             files_changed=_changed_paths(diff),
             diff=diff,
             cost_usd=cost_usd,

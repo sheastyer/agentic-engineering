@@ -29,7 +29,7 @@ from orchestrator.agents.coding.types import CodingTask
 from orchestrator.projects.loader import load_profile
 from orchestrator.projects.profile import ProjectProfile
 from orchestrator.shared.config import CODING_MAX_BUDGET_USD, CODING_MAX_TURNS
-from orchestrator.shared.types import FeedbackEvent, PRResult, Story, StoryResult
+from orchestrator.shared.types import FeedbackEvent, PRResult, Story, StoryPlan, StoryResult
 
 
 def _failed_story(story_id: str, exc: Exception) -> StoryResult:
@@ -66,23 +66,36 @@ def _coding_task(instruction: str, profile: ProjectProfile) -> CodingTask:
     )
 
 
-async def implement_story_with_pod(
+def _plan_instruction(plan: StoryPlan) -> str:
+    """One instruction for the WHOLE feature — the ordered story list as a checklist. A
+    single agent works through them in order in one workspace, so the feature lands as one
+    coherent diff: no parallel agents producing conflicting diffs, and no partial feature
+    from coding only the first story (the old CODING_MAX_STORIES=1 trap)."""
+    steps = "\n".join(f"{i}. {s.title}" for i, s in enumerate(plan.stories, 1))
+    return (
+        "Implement this feature completely. Work through the stories below IN ORDER, making "
+        "every change needed for a working, end-to-end feature — the user-facing UI included, "
+        "not just scaffolding. Treat it as one cohesive change:\n\n"
+        f"{steps}"
+    )
+
+
+async def _run_coding(
     agent: CodingAgent,
-    story: Story,
+    instruction: str,
+    story_id: str,
     profile: ProjectProfile,
-    *,
-    sandbox: Sandbox | None = None,
+    sandbox: Sandbox | None,
 ) -> StoryResult:
-    """Run one story through the coding pod (implement -> verify) in a disposable workspace.
-    Pure (agent + sandbox injected) for $0 unit testing. QA verdict maps to status; the diff
-    is carried up so the PR-open step can assemble it."""
-    task = _coding_task(story.title, profile)
+    """One coding attempt — one agent, one disposable workspace — adapted to a StoryResult.
+    Shared by the feature pod (whole plan), the single-story path, and the bug path."""
+    task = _coding_task(instruction, profile)
     source, from_git = _source_and_fromgit(profile)
     outcome, qa = await implement_and_verify(
         agent, task, source, from_git=from_git, sandbox=sandbox
     )
     return StoryResult(
-        story_id=story.id,
+        story_id=story_id,
         status="done" if qa.passed else "failed",
         pr_ref="",
         diff=outcome.diff,
@@ -92,17 +105,41 @@ async def implement_story_with_pod(
     )
 
 
-@activity.defn(name="implement_story")
-async def implement_story_agent(story: Story, project: str) -> StoryResult:
-    """Live coding run. Registered under the stub's name so the swap is a one-liner. A coding
-    error returns a failed story (never raises) so it isn't retried 4x at full cost (§10)."""
-    profile = load_profile(project)
+async def implement_plan_with_pod(
+    agent: CodingAgent,
+    plan: StoryPlan,
+    profile: ProjectProfile,
+    *,
+    sandbox: Sandbox | None = None,
+) -> StoryResult:
+    """Implement the WHOLE story plan with a single agent in one workspace → one diff. Pure
+    (agent + sandbox injected) for $0 unit testing."""
+    return await _run_coding(agent, _plan_instruction(plan), plan.feature_id, profile, sandbox)
+
+
+async def implement_story_with_pod(
+    agent: CodingAgent,
+    story: Story,
+    profile: ProjectProfile,
+    *,
+    sandbox: Sandbox | None = None,
+) -> StoryResult:
+    """One story in one workspace — the single-story path (used by tests / reusable)."""
+    return await _run_coding(agent, story.title, story.id, profile, sandbox)
+
+
+@activity.defn(name="implement_stories")
+async def implement_stories_agent(plan: StoryPlan) -> StoryResult:
+    """Live coding for a whole feature: one agent works the ordered story list in one
+    workspace. Registered under the stub's name so the swap is a one-liner. A coding error
+    returns a failed story (never raises) so it isn't retried 4x at full cost (§10)."""
+    profile = load_profile(plan.project)
     try:
-        return await implement_story_with_pod(
-            build_coding_agent(), story, profile, sandbox=build_sandbox()
+        return await implement_plan_with_pod(
+            build_coding_agent(), plan, profile, sandbox=build_sandbox()
         )
     except Exception as exc:  # noqa: BLE001 — deliberate: convert to a failed result, don't retry
-        return _failed_story(story.id, exc)
+        return _failed_story(plan.feature_id, exc)
 
 
 async def fix_bug_with_pod(
@@ -112,20 +149,9 @@ async def fix_bug_with_pod(
     *,
     sandbox: Sandbox | None = None,
 ) -> StoryResult:
-    """Bug-path twin of implement_story_with_pod: one coding attempt against the bug report."""
-    task = _coding_task(f"{event.title}\n\n{event.body}", profile)
-    source, from_git = _source_and_fromgit(profile)
-    outcome, qa = await implement_and_verify(
-        agent, task, source, from_git=from_git, sandbox=sandbox
-    )
-    return StoryResult(
-        story_id=f"bugfix-{event.id}",
-        status="done" if qa.passed else "failed",
-        pr_ref="",
-        diff=outcome.diff,
-        summary=outcome.summary,
-        cost_tokens=outcome.input_tokens + outcome.output_tokens,
-        cost_usd=outcome.cost_usd,
+    """Bug-path twin: one coding attempt against the bug report."""
+    return await _run_coding(
+        agent, f"{event.title}\n\n{event.body}", f"bugfix-{event.id}", profile, sandbox
     )
 
 

@@ -8,12 +8,23 @@ children (`-research-0`, `-pod`), decodes every ActivityTaskCompleted payload, a
 compact per-activity summary so you can verify the reasoning end to end.
 
     ./.venv/bin/python -m cli.trace feedback-demo-1234abcd
+    ./.venv/bin/python -m cli.trace feedback-demo-1234abcd --save .localdata/artifacts.db
 
-Read-only: it only fetches history, never signals or mutates anything.
+With --save it persists every decoded stage artifact (full payload) into a SQLite table
+`trace_artifacts(workflow_id, scope, seq, activity, payload_json, saved_at)` so the
+reasoning survives the (ephemeral) dev server and is queryable:
+
+    sqlite3 .localdata/artifacts.db "select activity from trace_artifacts where scope='parent'"
+
+Read-only wrt Temporal: it only fetches history, never signals or mutates anything.
 """
 
+import argparse
 import asyncio
-import sys
+import json
+import os
+import sqlite3
+import time
 
 from temporalio.client import Client
 from temporalio.converter import default as _default_converter
@@ -45,7 +56,7 @@ _VIEWS = {
     "consumer_research_persona": [("persona", 28), ("sentiment", 10), ("notes", 220)],
     "synthesize_research": [("overall_sentiment", 10), ("summary_ref", 60)],
     "architect_plan_stories": [("stories", 400)],
-    "implement_story": [("story_id", 28), ("status", 8), ("summary", 200), ("cost_usd", 10)],
+    "implement_stories": [("story_id", 28), ("status", 8), ("summary", 200), ("cost_usd", 10)],
     "qa_review": [("passed", 6), ("notes", 200)],
     "open_pr": [("opened", 6), ("url", 200), ("note", 120)],
     "deploy": [("deployed", 6), ("ref", 120)],
@@ -89,27 +100,60 @@ async def _trace_one(client: Client, wf_id: str, label: str) -> list[tuple[str, 
     return rows
 
 
+def _persist(db_path: str, wf_id: str, sections: list[tuple[str, list]]) -> int:
+    """Write decoded artifacts to SQLite — durable, queryable reasoning independent of the
+    (ephemeral) dev server. Re-running for the same workflow replaces its rows (idempotent)."""
+    os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS trace_artifacts ("
+        "workflow_id TEXT, scope TEXT, seq INTEGER, activity TEXT, "
+        "payload_json TEXT, saved_at TEXT)"
+    )
+    conn.execute("DELETE FROM trace_artifacts WHERE workflow_id = ?", (wf_id,))
+    saved_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+    n = 0
+    for scope, rows in sections:
+        for i, (activity, value) in enumerate(rows):
+            conn.execute(
+                "INSERT INTO trace_artifacts VALUES (?, ?, ?, ?, ?, ?)",
+                (wf_id, scope, i, activity, json.dumps(value, default=str), saved_at),
+            )
+            n += 1
+    conn.commit()
+    conn.close()
+    return n
+
+
 async def main() -> None:
-    if len(sys.argv) < 2:
-        print("usage: python -m cli.trace <workflow-id>")
-        raise SystemExit(2)
-    wf_id = sys.argv[1]
+    ap = argparse.ArgumentParser(description="Decode + (optionally) persist a workflow's reasoning trace.")
+    ap.add_argument("workflow_id")
+    ap.add_argument("--save", metavar="DB", help="persist decoded artifacts into this SQLite DB")
+    args = ap.parse_args()
+    wf_id = args.workflow_id
     client = await Client.connect(TEMPORAL_TARGET, namespace=TEMPORAL_NAMESPACE)
 
-    await _trace_one(client, wf_id, "PARENT (feature request)")
-    await _trace_one(client, f"{wf_id}-research-0", "CHILD: consumer research")
-    pod_rows = await _trace_one(client, f"{wf_id}-pod", "CHILD: engineering pod")
+    sections = [
+        ("parent", await _trace_one(client, wf_id, "PARENT (feature request)")),
+        ("research", await _trace_one(client, f"{wf_id}-research-0", "CHILD: consumer research")),
+        ("pod", await _trace_one(client, f"{wf_id}-pod", "CHILD: engineering pod")),
+    ]
+    pod_rows = sections[-1][1]
 
     # Dump the full coding diff(s) to a file — too big for the inline trace.
     diffs = []
     for name, value in pod_rows:
-        if name == "implement_story" and isinstance(value, dict) and value.get("diff"):
+        if name == "implement_stories" and isinstance(value, dict) and value.get("diff"):
             diffs.append(f"# story {value.get('story_id')}\n{value['diff']}")
     if diffs:
         out = f"/tmp/steelthread-{wf_id}.diff"
         with open(out, "w", encoding="utf-8") as fh:
             fh.write("\n\n".join(diffs))
         print(f"\n  full coding diff written to {out}")
+
+    if args.save:
+        n = _persist(args.save, wf_id, sections)
+        print(f"  persisted {n} stage artifacts to {args.save} (table trace_artifacts)")
 
 
 if __name__ == "__main__":

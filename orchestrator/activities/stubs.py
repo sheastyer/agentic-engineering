@@ -136,13 +136,13 @@ async def architect_plan_stories(prd: PRD, report: ResearchReport) -> StoryPlan:
 
 
 @activity.defn
-async def implement_story(story: Story, project: str) -> StoryResult:
-    # Stub for the Agent SDK coding run (M4). Always "done" in M1. `project` is unused by
-    # the stub but required for signature parity with the agent-backed twin (same name).
+async def implement_stories(plan: StoryPlan) -> StoryResult:
+    # Stub for the Agent SDK coding run (M4): one agent implements the whole story plan in
+    # one workspace. Always "done" in M1; the agent-backed twin (same name) does the real work.
     return StoryResult(
-        story_id=story.id,
+        story_id=plan.feature_id,
         status="done",
-        pr_ref=f"pr://{story.id}",
+        pr_ref=f"pr://{plan.feature_id}",
         summary="(stub) implemented",
         cost_tokens=800,
     )
@@ -219,7 +219,7 @@ ALL_ACTIVITIES = [
     consumer_research_persona,
     synthesize_research,
     architect_plan_stories,
-    implement_story,
+    implement_stories,
     qa_review,
     open_pr,
     deploy,

@@ -21,9 +21,12 @@ execution-plane coding pod is **wired into Temporal** behind `USE_AGENT_CODING` 
 `implement_story`/`fix_bug`/`open_pr`), runs the Claude Agent SDK on the subscription in a
 **ContainerSandbox**, and was **validated end-to-end on 2026-06-19**: a dark-mode feature
 request drove the whole feature path and opened a **real GitHub PR** (meal-planner #3) for
-~$0.34 coding + ~$0.25 reasoning. Coding-pod **cost controls** added after a runaway run
-(single-story cap, no-retry-on-failure, per-attempt turn/budget caps — see "M4 progress").
-**72 tests green** (~12s).
+~$0.34 coding + ~$0.25 reasoning. The pod was then redesigned to **one agent implementing the
+whole story plan in one workspace** (the earlier `CODING_MAX_STORIES=1` cap shipped a partial
+feature — no toggle) and validated 2026-06-19: the full thread opened **meal-planner PR #4** —
+a *complete* dark-mode feature (accessible toggle, FOUC-prevention, system-pref activation,
+component refactor, Playwright tests) for ~$1.87 coding + ~$0.38 reasoning. Reasoning traces are
+now **persisted** (Temporal `--db-filename` + `cli.trace --save` → SQLite). **73 tests green** (~13s).
 
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`
@@ -176,17 +179,38 @@ request drove the whole feature path and opened a **real GitHub PR** (meal-plann
   resilient); (4) live `architect_plan_stories` didn't set `StoryPlan.project` (the stub did);
   (5) the pod's spawned `claude` inherited *this* Claude Code session's env (`CLAUDECODE`, …) →
   nested-session error — must launch the worker with those stripped (`env -u CLAUDECODE …`).
-- **Coding-pod cost controls ✅ (2026-06-18, §10):** the pod dominates a feature's cost and runs
-  on the subscription's 5-hour window, so: a coding error now returns a **failed** story instead
-  of raising (was retried 4×, each retry a full coding run — the main spend leak); `CODING_MAX_STORIES`
-  (default **1**) caps how many stories code per run (rest = $0 `deferred` markers → no fan-out of
-  parallel agents); `CODING_MAX_TURNS=8` / `CODING_MAX_BUDGET_USD=0.25` hard-cap each attempt;
-  pod defaults to the **mock** agent ($0) unless `CODING_AGENT=claude`. Tested at $0.
-- **Still owed before the M4 exit gate:** (1) **one cheap real pod run** (single capped agent)
-  once the subscription window resets, to land an actual PR via the thread; (2) root-cause the
-  *parallel* (>1 concurrent) `claude` "error result: success" — single-agent works, so deferred,
-  not blocking; (3) **PR merge** side-effect with idempotency keys (open is done; merge is the
-  human-gated deploy step); (4) cost/story COST bands + injection fixtures.
+- **Coding-pod cost controls + single-agent redesign ✅ (2026-06-18 → 06-19, §10):** the pod
+  dominates a feature's cost and runs on the subscription's 5-hour window. Guards: a coding error
+  returns a **failed** story instead of raising (was retried 4×, each a full coding run — the main
+  leak); `CODING_MAX_TURNS=40` / `CODING_MAX_BUDGET_USD=1.50` hard-cap the agent (high enough to
+  *finish* — $0.25/8-turn truncated with no diff); pod defaults to **mock** ($0). The first guard
+  shipped was a `CODING_MAX_STORIES=1` cap, but that was **wrong by design** — see the gap below —
+  and was replaced: the pod now runs **one agent over the whole ordered story plan in a single
+  workspace** (`implement_stories`), producing one coherent diff. This also retires the parallel
+  >1-agent "error result: success" issue (no concurrent agents) and the conflicting-diff problem.
+  Coding runs on **Sonnet**. Tested at $0 (73 green).
+- **The dark-mode PR gap, root-caused (2026-06-19):** PR #3 had the dark CSS but **no toggle**.
+  Trace (recovered from the coding agent's own session transcripts; the ephemeral Temporal history
+  was gone): reasoning was *correct* — the architect decomposed the feature into ~6 stories incl.
+  "Add accessible theme toggle control…". The gap was the `CODING_MAX_STORIES=1` cap coding only
+  story #1 (theming foundation), deferring the toggle; compounded by the agent receiving only
+  `story.title`. Fixed by the single-agent redesign above (whole plan → one agent) — lesson logged
+  in CLAUDE.md §10.
+- **Complete feature landed + trace persistence ✅ (2026-06-19):** the single-agent pod opened
+  **PR #4** — a full dark-mode feature *with* the accessible toggle, FOUC-prevention, system-pref
+  activation, component refactor, and Playwright tests (~$1.87 coding / ~$0.38 reasoning, 13 files).
+  Three fixes made it land: (a) **diff-capture on a soft stop** (`claude_sdk.py`) — a budget/turn
+  limit now keeps the partial diff instead of discarding the whole run (a $1.50 run had silently
+  thrown away ~12 min of edits); (b) **pod `cost_usd` roll-up** (was reporting reasoning only);
+  (c) **per-run unique branch tag** (no remote collision on re-runs). Reasoning traces are persisted
+  via Temporal `--db-filename` + `cli.trace --save` → `trace_artifacts` SQLite table.
+- **Still owed before the M4 exit gate:** (1) the architect **over-decomposes simple features**
+  (~10 stories incl. axe-core contrast tests for "add a toggle"), inflating coding cost/scope — add
+  a complexity/scope signal; (2) the coding prompt's "`npm test` must pass" causes **test-infra
+  scope creep** (the agent adds Playwright + a lockfile diff) — relax or scope it; (3) **PR merge**
+  side-effect with idempotency keys (open done; merge is the human-gated deploy); (4) cost/story
+  COST bands + injection fixtures; (5) drop reasoning Opus→Sonnet on simple features (the Opus
+  brief/PRD/arch/story-plan stages are the bulk of reasoning tokens).
 
 **Open decisions blocking later milestones:** D1 (M5 human-I/O channel). D5/D6 resolved.
 See the Decisions tracker at the bottom.

@@ -127,28 +127,53 @@ def test_open_pr_not_opened_when_no_diffs(tmp_path):
     assert pr.opened is False
 
 
+async def test_implement_plan_codes_whole_feature_in_one_pass(tmp_path):
+    """The pod implements the WHOLE plan with one agent in one workspace — every story's
+    instruction reaches the agent (not just story #1), and it lands as one diff."""
+    from orchestrator.activities.coding_backed import _plan_instruction, implement_plan_with_pod
+    from orchestrator.shared.types import StoryPlan
+
+    repo = _seeded_git_repo(tmp_path)
+    plan = StoryPlan(
+        feature_id="feat-x", project="fixture",
+        stories=[
+            Story(id="S1", title="Fix the add() helper", estimate=1),
+            Story(id="S2", title="Wire it into the UI", estimate=2),
+        ],
+    )
+    # Both story titles must reach the agent as one ordered instruction.
+    instr = _plan_instruction(plan)
+    assert "Fix the add() helper" in instr and "Wire it into the UI" in instr
+
+    result = await implement_plan_with_pod(MockCodingAgent(edits=[FIX]), plan, _profile(local_path=repo))
+    assert result.status == "done", result.summary
+    assert result.story_id == "feat-x" and "return a + b" in result.diff
+
+
 async def test_coding_error_becomes_failed_story_not_a_retry(monkeypatch):
     """Cost guard (§10): a coding error must return a *failed* StoryResult, never raise —
     otherwise Temporal retries the activity 4x, each retry burning a full coding run."""
     import orchestrator.activities.coding_backed as cb
+    from orchestrator.shared.types import StoryPlan
 
     async def boom(*a, **k):
         raise RuntimeError("simulated agent crash at result-collection")
 
-    monkeypatch.setattr(cb, "implement_story_with_pod", boom)
-    result = await cb.implement_story_agent(Story(id="S1", title="x", estimate=1), "meal-planner")
+    monkeypatch.setattr(cb, "implement_plan_with_pod", boom)
+    plan = StoryPlan(feature_id="feat-x", stories=[Story(id="S1", title="x", estimate=1)], project="meal-planner")
+    result = await cb.implement_stories_agent(plan)
     assert result.status == "failed"
     assert "simulated agent crash" in result.summary
 
 
 @pytest.mark.asyncio
-async def test_pod_codes_only_cap_and_defers_the_rest():
-    """Cost cap: the pod codes at most CODING_MAX_STORIES per run; extra stories come back
-    as $0 'deferred' markers (so a feature can't spawn N parallel coding agents)."""
+async def test_pod_runs_one_agent_for_the_whole_plan():
+    """The pod is a single coding pass over the ordered plan (no per-story fan-out): one
+    story_result keyed by the feature id, and a PR opened from it."""
     from temporalio.testing import WorkflowEnvironment
     from temporalio.worker import Worker
 
-    from orchestrator.shared.config import CODING_MAX_STORIES, TASK_QUEUE
+    from orchestrator.shared.config import TASK_QUEUE
     from orchestrator.shared.types import StoryPlan
     from orchestrator.workflows.engineering_pod import EngineeringPodWorkflow
     from tests.helpers import TEMPORAL_CLI, activities_with
@@ -162,10 +187,8 @@ async def test_pod_codes_only_cap_and_defers_the_rest():
             workflows=[EngineeringPodWorkflow], activities=activities_with(),
         ):
             pod = await env.client.execute_workflow(
-                EngineeringPodWorkflow.run, plan, id="pod-cap-test", task_queue=TASK_QUEUE
+                EngineeringPodWorkflow.run, plan, id="pod-single-agent-test", task_queue=TASK_QUEUE
             )
 
-    coded = [r for r in pod.story_results if r.status != "deferred"]
-    deferred = [r for r in pod.story_results if r.status == "deferred"]
-    assert len(coded) == CODING_MAX_STORIES
-    assert len(deferred) == len(stories) - CODING_MAX_STORIES
+    assert len(pod.story_results) == 1
+    assert pod.story_results[0].story_id == "feat-x"

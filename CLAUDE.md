@@ -258,12 +258,18 @@ These are non-negotiable. If a task seems to require breaking one, stop and ask.
   references; never re-ingest large payloads through the parent.
 - **The engineering pod dominates a feature's cost — cap it hard.** It runs the Agent SDK on
   the Claude *subscription* (shared 5-hour usage window), so an uncapped pod can drain that
-  window in an hour. The guards (in `config.py`, learned the hard way 2026-06-18): a coding
-  error must return a **failed story, never raise** (a raise = up to 4× Temporal retries, each
-  a full coding run — the worst leak); `CODING_MAX_STORIES` (default 1) caps stories coded per
-  run so a feature can't fan out N parallel agents; `CODING_MAX_TURNS`/`CODING_MAX_BUDGET_USD`
-  hard-cap each attempt — but high enough to *finish* ($0.25/8-turn was too tight to produce a
-  diff; ~$1.50/40-turn completed). Default the pod to **mock** ($0) unless coding is the point.
+  window in an hour. The guards (in `config.py` / `coding_backed.py`, learned the hard way
+  2026-06-18): **one agent implements the whole feature in one workspace** (the ordered story
+  list as a single instruction) — no fan-out of parallel agents against separate clones, which
+  caused both churn *and* conflicting/partial diffs (coding only story #1 of N shipped a
+  feature with no UI); a coding error must return a **failed story, never raise** (a raise = up
+  to 4× Temporal retries, each a full coding run — the worst leak); a budget/turn limit is a
+  **soft stop** — `claude_sdk` captures the partial diff instead of discarding the whole run
+  (a raise after the work is done silently wiped ~12 min of edits before this fix);
+  `CODING_MAX_TURNS`/`CODING_MAX_BUDGET_USD` hard-cap that one agent — but high enough to
+  *finish* ($0.25/8-turn produced nothing; ~$2.50/70-turn completed a real dark-mode feature at
+  ~$1.87). Coding runs on **Sonnet**, not Opus. Default the pod to **mock** ($0) unless coding
+  is the point.
 - Multi-agent systems run roughly an order of magnitude more tokens than a single
   chat — keep fan-out widths and iteration counts capped.
 

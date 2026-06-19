@@ -67,7 +67,7 @@ blocking poll).
 | 5 | **Consumer research** | `consumer_researcher` × N demographics | Sonnet | `ResearchFindingOutput` | Child workflow, **parallel fan-out** (§4). |
 | 6 | 🧑 **PM sign-off** | — | — | — | `revise` loops back into PRD revision, bounded by `MAX_SIGNOFF_REVISIONS` (2). |
 | 7 | `architect_plan_stories` | `architect_plan_stories` | Opus | `StoryPlanOutput` | PRD → independently shippable stories with effort estimates. |
-| 8 | **Engineering pod** | coding agent per story (Claude Agent SDK) | — | — | Child workflow, **orchestrator-worker** (§4). Codes, QAs, and **opens a PR**. |
+| 8 | **Engineering pod** | one coding agent, whole feature (Claude Agent SDK) | — | — | Child workflow (§4) — implements all stories in one workspace, QAs, and **opens a PR**. |
 | 9 | 🧑 **Deploy approval** | — | — | — | Then `deploy` via the profile's deploy target → `SHIPPED`. |
 
 Two things worth internalizing from this table:
@@ -148,14 +148,17 @@ classic multi-agent pattern:
   (`DEFAULT_RESEARCH_PERSONAS` — budget-conscious, time-constrained professional, power
   user, first-time user) is bounded by the caller-supplied list. Findings persist detail
   to storage and return lightweight references, not raw transcripts.
-- **`EngineeringPodWorkflow` — orchestrator-worker.** Codes up to `CODING_MAX_STORIES`
-  stories (default 1 — the cost guard; the rest come back as `$0` "deferred" markers) via
-  worker activities that each run a coding agent — the **Claude Agent SDK** in a disposable
-  clone — then runs QA (one bounded `MAX_QA_FIX_PASSES` fix pass), and finally **opens a PR**
-  from the assembled diffs through a pluggable `PRTarget` (`orchestrator/agents/coding/pr_target.py`:
-  `local` clones/applies/commits a dry-run branch with no push; `github` pushes + `gh pr create`).
-  A coding error returns a *failed* story rather than raising, so it's never retried at full
-  cost. Deploy/merge is deliberately *not* here — it sits behind the parent's human gate.
+- **`EngineeringPodWorkflow` — single coding pass.** A **single agent** (the **Claude Agent
+  SDK** in a disposable clone) implements the architect's stories **in order, in one
+  workspace** — the ordered story list handed over as one instruction — so the feature lands
+  as one coherent diff. (This deliberately is *not* a per-story parallel fan-out: independent
+  agents on separate clones caused churn, conflicting diffs, and partial features. Parallel
+  fan-out is the right pattern for *research*, not for cohesive coding.) The pod then runs QA
+  (one bounded `MAX_QA_FIX_PASSES` pass) and **opens a PR** through a pluggable `PRTarget`
+  (`orchestrator/agents/coding/pr_target.py`: `local` clones/applies/commits a dry-run branch
+  with no push; `github` pushes + `gh pr create`). A coding error returns a *failed* story
+  rather than raising, so it's never retried at full cost. Deploy/merge is deliberately *not*
+  here — it sits behind the parent's human gate.
 
 ---
 
@@ -274,8 +277,7 @@ All the org-wide dials live in `orchestrator/shared/config.py`. The ones you'll 
 | `MAX_PRD_PASSES` | 3 | PRD ⇄ architect review loop |
 | `MAX_SIGNOFF_REVISIONS` | 2 | PM sign-off → PRD revision loopback |
 | `MAX_QA_FIX_PASSES` | 0 | engineering-pod QA → fix loop (0 while the example target's tests can't run in the sandbox — a fix pass can't go green, so it would just double cost; set 1 when QA can pass) |
-| `CODING_MAX_STORIES` | 1 | stories the pod codes per run (rest → `$0` "deferred"); the real fan-out / cost guard |
-| `CODING_MAX_TURNS` / `CODING_MAX_BUDGET_USD` | 40 / $1.50 | per coding-attempt hard caps handed to the SDK (high enough to *finish* a small feature) |
+| `CODING_MAX_TURNS` / `CODING_MAX_BUDGET_USD` | 70 / $2.50 | caps on the pod's single coding agent (one agent does the whole feature). A budget/turn stop is a *soft* stop — the partial diff is captured, never discarded — but these must be high enough to *finish* (a real dark-mode feature ran ~$1.87) |
 | `CODING_ACTIVITY_TIMEOUT_MINUTES` | 20 | coding/PR activities run minutes, not the 180s reasoning default |
 | `BUDGET_USD` | feature $3 / bug $0.50 | per-workflow dollar ceiling → human gate |
 | `COUNCIL_TIMEOUT_HOURS` | 72 | human council vote before agent-majority fallback |
