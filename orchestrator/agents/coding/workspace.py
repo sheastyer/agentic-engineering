@@ -28,6 +28,7 @@ _TRANSIENT_EXCLUDES = (
     ".pytest_cache/",
     "node_modules/",
     ".next/",
+    ".agentic/",        # the container coding agent stages its prompt + a writable HOME here
 )
 
 

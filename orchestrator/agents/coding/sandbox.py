@@ -26,6 +26,49 @@ class CommandResult:
     output: str          # merged stdout+stderr
 
 
+def container_run_args(
+    *,
+    runtime: str,
+    image: str,
+    cwd: str,
+    command: str,
+    allow_network: bool,
+    env: dict[str, str],
+    memory: str = "1g",
+    cpus: str = "2",
+    user: str | None = None,
+    mounts: tuple[tuple[str, str, bool], ...] = (),
+    pids_limit: int = 512,
+) -> list[str]:
+    """The single source of truth for the D9 execution boundary (used by `ContainerSandbox`
+    *and* the container coding agent, so both get the same guarantees the escape-tests assert).
+
+    Mounts **only** `cwd` at `/work` (+ any explicit `mounts`), gives the container an **empty
+    environment** except `env`, blocks the network unless `allow_network`, drops all caps, and
+    sets `no-new-privileges` + pid/mem/cpu caps. `user` (uid:gid) keeps container-written files
+    owned by the host user so the diff/cleanup stay clean; `mounts` are `(host, container, ro)`.
+    """
+    args = [
+        runtime, "run", "--rm",
+        "-v", f"{os.path.abspath(cwd)}:/work",
+        "-w", "/work",
+        "--network", "bridge" if allow_network else "none",
+        "--cap-drop", "ALL",
+        "--security-opt", "no-new-privileges",
+        "--pids-limit", str(pids_limit),
+        "--memory", memory,
+        "--cpus", cpus,
+    ]
+    if user:
+        args += ["--user", user]
+    for host_path, container_path, read_only in mounts:
+        args += ["-v", f"{os.path.abspath(host_path)}:{container_path}{':ro' if read_only else ''}"]
+    for key, value in env.items():
+        args += ["-e", f"{key}={value}"]
+    args += [image, "sh", "-lc", command]
+    return args
+
+
 class Sandbox(Protocol):
     """Runs a shell command in a directory and returns its result."""
 
@@ -77,11 +120,12 @@ class ContainerSandbox:
     Plus defence-in-depth: all Linux capabilities dropped, `no-new-privileges`, and pid/mem/cpu
     caps so a runaway or fork-bomb can't take the host down.
 
-    Note (honest scope): with the SDK coding agent, the agent process and its Bash tool run on
-    the *host* today; this sandbox currently contains the **test command** Workspace runs (a
-    real injection vector — repo-authored test scripts). Containing the agent process itself
-    (run `claude` inside the container, or the SDK's native SandboxSettings) is the remaining
-    D9 hardening, tracked in PLAN.md.
+    This boundary contains the **test command** Workspace runs (a real injection vector —
+    repo-authored test scripts). The *agent process itself* is contained by the same boundary
+    when `CODING_AGENT=claude_container` (see `agents/claude_container.py`), which runs `claude`
+    inside a container built from `container_run_args` rather than on the host (Option A of the
+    D9 agent-process hardening). The remaining tightening is an egress allow-list for the agent's
+    container (it needs the model API, so it runs with the network on today) — tracked in PLAN.md.
     """
 
     image: str = _DEFAULT_IMAGE
@@ -93,20 +137,10 @@ class ContainerSandbox:
     name: str = "container"
 
     def run(self, command: str, cwd: str, timeout: int = 600) -> CommandResult:
-        args = [
-            self.runtime, "run", "--rm",
-            "-v", f"{os.path.abspath(cwd)}:/work",
-            "-w", "/work",
-            "--network", "bridge" if self.allow_network else "none",
-            "--cap-drop", "ALL",
-            "--security-opt", "no-new-privileges",
-            "--pids-limit", "512",
-            "--memory", self.memory,
-            "--cpus", self.cpus,
-        ]
-        for key, value in self.env.items():
-            args += ["-e", f"{key}={value}"]
-        args += [self.image, "sh", "-lc", command]
+        args = container_run_args(
+            runtime=self.runtime, image=self.image, cwd=cwd, command=command,
+            allow_network=self.allow_network, env=self.env, memory=self.memory, cpus=self.cpus,
+        )
         # No `env=` on the host call: the docker *client* inherits the parent env (it needs
         # DOCKER_HOST etc.), but the *container* only ever sees what `-e` above injects.
         proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)

@@ -25,6 +25,11 @@ CODING_ACTIVITY_TIMEOUT_MINUTES = 20
 CODING_MAX_TURNS = 70
 CODING_MAX_BUDGET_USD = 2.50
 
+# Default image for the container coding agent (Option A, D9 — `CODING_AGENT=claude_container`).
+# Must carry the `claude` CLI + the target stack's runtime; supply the real one per deployment via
+# CODING_AGENT_IMAGE. Plain constant (no env read) so workflows can import this module (R3).
+CODING_AGENT_IMAGE_DEFAULT = "agentic-coder:latest"
+
 # Per-workflow budget ceilings in USD (CLAUDE.md §10, decision D7). Lean on purpose:
 # the gate is expected to trip on real coding (M4) for a small app, forcing human review.
 # Cost is dollar-denominated from real response.usage × tier pricing (see PRICING).

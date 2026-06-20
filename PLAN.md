@@ -30,7 +30,8 @@ now **persisted** (Temporal `--db-filename` + `cli.trace --save` → SQLite). Th
 are now **idempotent** and the human-gated **merge deploy** (D6) is implemented (open-twice → one PR,
 merge-twice → one merge). The reasoning plane now downgrades **Opus→Sonnet on small features** via an
 early `complexity` signal from the brief, and `evals.run --max-cost` adds a per-case **COST band**.
-**82 tests green** (~13s).
+The coding agent can now run **inside the container boundary** (`CODING_AGENT=claude_container`),
+so the agent process — not just the test command — is isolated from the host. **89 tests green** (~13s).
 
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`
@@ -267,11 +268,28 @@ early `complexity` signal from the brief, and `evals.run --max-cost` adds a per-
 - **COST bands ✅ (2026-06-19):** `evals.run --max-cost <ceiling>` fails the run if any case tops a
   per-case dollar ceiling — the "drifted up a tier" regression guard (§10); reported with headroom
   even on pass. Gate-tested ($0 mock). Wire a per-persona ceiling into CI alongside `--min-pass`.
+- **Agent-process containment ✅ (Option A, 2026-06-19):** the SDK agent runs `claude` on the
+  **host** (cwd scopes it, but its Bash tool sees the host FS, the worker's env/secrets, and the
+  network). New `ContainerClaudeCodingAgent` (`CODING_AGENT=claude_container`) runs `claude`
+  **inside the container boundary** instead: the boundary flags are factored into one shared
+  `container_run_args` (used by both `ContainerSandbox` *and* this agent), so the agent gets the
+  same guarantees the escape negative-tests assert — workspace bind-mounted at `/work` and nothing
+  else, **empty container env** except the one forwarded credential, all caps dropped,
+  `no-new-privileges`, host-user file ownership. The untrusted prompt is fed on **stdin**
+  (`< /work/.agentic/prompt.txt`) so task text never reaches argv; results parse from
+  `claude -p --output-format json`; a non-zero exit is a soft stop (partial diff kept). Credentials
+  cross only via `CODING_AGENT_CRED_ENV` (forwarded env vars) / `CODING_AGENT_CRED_MOUNT` (a ro
+  file mount); image via `CODING_AGENT_IMAGE`. Proven at $0 with an injected runner (+7 tests:
+  mounts/boundary/stdin-quarantine/soft-stop/helper-dir-excluded/factory) and the **7 docker escape
+  tests still pass** against the refactored `ContainerSandbox`. *Residual:* the agent container runs
+  with the network **on** (it must reach the model API) — an egress allow-list for just the API host
+  is the next tightening; FS + secret isolation already hold. Live-validation (real image + the
+  subscription-credential-in-container path) is the remaining manual step, same as the SDK agent was.
 - **M4 exit-gate quality/cost items: all cleared.** The substantive gate work (merge + idempotency,
-  over-decomposition, scope creep, tier downgrade, COST bands, injection hygiene) is done. Remaining
-  M4 polish is optional: containing the agent *process* (not just the test command) for untrusted
-  input — run `claude` in-container / SDK SandboxSettings — and live cost/story COST bands on a real
-  coding run (the mechanism exists; needs a live pass to set the numbers). **82 tests green.**
+  over-decomposition, scope creep, tier downgrade, COST bands, injection hygiene, **agent-process
+  containment**) is done. Remaining M4 polish is optional and small: the agent-container egress
+  allow-list (above) and live cost/story COST bands on a real coding run (the mechanism exists;
+  needs a live pass to set the numbers). **89 tests green.**
 
 **Open decisions blocking later milestones:** D1 (M5 human-I/O channel). D5/D6 resolved.
 See the Decisions tracker at the bottom.
