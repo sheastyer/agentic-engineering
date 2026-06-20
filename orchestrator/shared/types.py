@@ -164,7 +164,10 @@ class QAResult:
 
 @dataclass
 class PodResult:
-    story_results: list[StoryResult]
+    # One agent implements the whole ordered story plan in a single workspace, so the pod
+    # produces exactly ONE coherent result (not a per-story list — that was the retired
+    # fan-out design that shipped conflicting/partial diffs).
+    story_result: StoryResult
     qa: QAResult
     branch: str
     pr_url: str = ""            # the PR the pod opened (or a local dry-run ref)

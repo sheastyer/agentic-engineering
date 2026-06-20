@@ -262,5 +262,4 @@ async def test_pod_runs_one_agent_for_the_whole_plan():
                 EngineeringPodWorkflow.run, plan, id="pod-single-agent-test", task_queue=TASK_QUEUE
             )
 
-    assert len(pod.story_results) == 1
-    assert pod.story_results[0].story_id == "feat-x"
+    assert pod.story_result.story_id == "feat-x"

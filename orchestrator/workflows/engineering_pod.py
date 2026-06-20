@@ -49,7 +49,7 @@ class EngineeringPodWorkflow:
         cost = result.cost_tokens + qa.cost_tokens + pr.cost_tokens
         cost_usd = result.cost_usd + qa.cost_usd + pr.cost_usd
         return PodResult(
-            story_results=[result],
+            story_result=result,
             qa=qa,
             branch=branch,
             pr_url=pr.url,
