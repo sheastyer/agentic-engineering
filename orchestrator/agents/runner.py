@@ -38,7 +38,13 @@ class AgentRunner:
     def __init__(self, provider: ModelProvider) -> None:
         self._provider = provider
 
-    def run(self, persona: Persona, profile: ProjectProfile, task_input: str) -> RunResult:
+    def run(
+        self, persona: Persona, profile: ProjectProfile, task_input: str, *, tier: str | None = None
+    ) -> RunResult:
+        # `tier` overrides the persona's default tier for this call only — the cost lever that
+        # downgrades Opus reasoning stages to Sonnet on small features (§10). Pricing and the
+        # request both use the effective tier, so cost accounting stays exact.
+        effective_tier = tier or persona.tier
         system = persona.render_system(profile)
         messages: list[dict] = [{"role": "user", "content": task_input}]
 
@@ -47,14 +53,14 @@ class AgentRunner:
 
         for attempt in range(persona.max_reask + 1):
             resp = self._provider.generate_structured(
-                tier=persona.tier,
+                tier=effective_tier,
                 system=system,
                 messages=messages,
                 output_model=persona.output_model,
                 effort=persona.effort,
                 max_tokens=persona.max_tokens,
             )
-            cost += _cost_usd(resp, persona.tier)
+            cost += _cost_usd(resp, effective_tier)
             in_tok += resp.input_tokens
             out_tok += resp.output_tokens
 

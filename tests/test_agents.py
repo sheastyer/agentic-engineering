@@ -71,6 +71,41 @@ def test_story_plan_complexity_bounds_count():
         StoryPlanOutput(complexity="medium", stories=_stories(0))
 
 
+def test_tier_downgrades_opus_to_sonnet_only_for_small():
+    """The cost lever (§10): small features drop the Opus reasoning stages to Sonnet; anything
+    non-trivial (or unknown complexity) keeps Opus, and non-Opus tiers are never touched."""
+    from orchestrator.activities.agent_backed import _tier_for
+
+    assert _tier_for("opus", "small") == "sonnet"
+    assert _tier_for("opus", "medium") == "opus"
+    assert _tier_for("opus", "large") == "opus"
+    assert _tier_for("opus", "") == "opus"        # unknown → keep Opus (safe default)
+    assert _tier_for("sonnet", "small") == "sonnet"  # non-Opus tiers unaffected
+
+
+def test_prd_authoring_uses_sonnet_for_small_features():
+    """A small-complexity brief routes PRD authoring to Sonnet (and threads complexity onto the
+    PRD so the architect stages reuse the lever); a medium brief stays on Opus."""
+    from orchestrator.activities.agent_backed import author_prd_with_runner
+    from orchestrator.agents.registry.contracts import PRDAuthoringOutput
+    from orchestrator.shared.types import Brief
+
+    out = PRDAuthoringOutput(content="# PRD\n...", acceptance_criteria=["does X"], open_issues=[])
+
+    def _brief(complexity: str) -> Brief:
+        return Brief(summary="Add a toggle", problem="p", target_users="u",
+                     ui_impacting=True, complexity=complexity, project="meal-planner")
+
+    small_provider = _FakeProvider(out, 1000, 400, model_id="claude-sonnet-4-6")
+    prd = author_prd_with_runner(small_provider, _brief("small"))
+    assert small_provider.calls[0]["tier"] == "sonnet"
+    assert prd.complexity == "small"              # carried for the architect stages
+
+    medium_provider = _FakeProvider(out, 1000, 400, model_id="claude-opus-4-8")
+    author_prd_with_runner(medium_provider, _brief("medium"))
+    assert medium_provider.calls[0]["tier"] == "opus"
+
+
 # --- project profile -----------------------------------------------------------
 def test_profile_loads_and_validates():
     assert PROFILE.id == "meal-planner"
@@ -231,7 +266,7 @@ def test_draft_brief_activity_adapts_contract_and_carries_project():
     from orchestrator.shared.types import Brief, FeedbackKind
 
     parsed = BriefOutput(summary="Dark mode toggle", problem="app too bright at night",
-                         target_users="all users", ui_impacting=True)
+                         target_users="all users", ui_impacting=True, complexity="medium")
     provider = _FakeProvider(parsed, 1500, 500, model_id="claude-opus-4-8")  # opus $5/$25
     event = SimpleNamespace(id="x", kind=FeedbackKind.FEATURE, title="Dark mode",
                             body="too bright at night", submitted_by="t", project="meal-planner")
@@ -241,9 +276,10 @@ def test_draft_brief_activity_adapts_contract_and_carries_project():
     assert isinstance(brief, Brief)
     assert brief.summary == "Dark mode toggle"
     assert brief.ui_impacting is True          # gates the conditional UX-mocks stage
+    assert brief.complexity == "medium"        # early scope signal carried onto the brief
     assert brief.project == "meal-planner"     # carried from the event for downstream context
     assert brief.cost_usd == pytest.approx(0.02)  # 1500×$5/1e6 + 500×$25/1e6
-    assert provider.calls[0]["tier"] == "opus"
+    assert provider.calls[0]["tier"] == "opus"  # brief itself stays Opus (it makes the call)
 
 
 # --- runner-backed bug-prioritization activity (M3 Haiku swap, bug path) -------

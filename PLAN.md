@@ -28,7 +28,9 @@ a *complete* dark-mode feature (accessible toggle, FOUC-prevention, system-pref 
 component refactor, Playwright tests) for ~$1.87 coding + ~$0.38 reasoning. Reasoning traces are
 now **persisted** (Temporal `--db-filename` + `cli.trace --save` → SQLite). The pod's PR side-effects
 are now **idempotent** and the human-gated **merge deploy** (D6) is implemented (open-twice → one PR,
-merge-twice → one merge). **77 tests green** (~13s).
+merge-twice → one merge). The reasoning plane now downgrades **Opus→Sonnet on small features** via an
+early `complexity` signal from the brief, and `evals.run --max-cost` adds a per-case **COST band**.
+**82 tests green** (~13s).
 
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`
@@ -249,12 +251,27 @@ merge-twice → one merge). **77 tests green** (~13s).
   threaded onto `StoryPlan` (traced for cost analysis) and shown in `cli.trace`. New eval case
   `clear-week-plan` (a trivial single-action feature must read `small` ≤3 stories) + a `max_items`
   harness operator + contract unit tests. **78 tests green.**
-- **Still owed before the M4 exit gate:** (1) the coding prompt's "`npm test` must pass" causes
-  **test-infra scope creep** (the agent adds Playwright + a lockfile diff) — relax or scope it;
-  (2) cost/story COST bands + injection fixtures; (3) drop reasoning Opus→Sonnet on simple features
-  (the Opus brief/PRD/arch/story-plan stages are the bulk of reasoning tokens). (PR merge +
-  idempotency ✅ and architect over-decomposition ✅ — see above. Remaining items are quality/cost
-  tuning, not gate blockers.)
+- **Coding-prompt test-infra scope creep fixed ✅ (2026-06-19):** the coding prompt's flat "the
+  test command must pass" pushed the agent to stand up Playwright + a lockfile diff for a target
+  whose suite can't run here. Reworded (`claude_sdk._prompt`): stay focused on the feature, do NOT
+  add test frameworks / CI / deps to satisfy a test step; run the suite *only if it's runnable* and
+  otherwise verify by inspection. (M4 EVAL coding-injection: a $0 structural test now asserts the
+  prompt quarantines untrusted task text inside `<task>` with the precedence rules outside it.)
+- **Reasoning Opus→Sonnet on small features ✅ (2026-06-19):** the Opus stages dominate reasoning
+  tokens. The PM brief now emits an early `complexity` read (small|medium|large); it's threaded
+  brief→PRD and a `_tier_for(default, complexity)` helper downgrades the Opus stages (PRD authoring,
+  architect review, story planning) to **Sonnet when small**, keeping Opus for medium/large/unknown.
+  The `AgentRunner.run(..., tier=…)` override does it per-call with exact cost accounting; the brief
+  itself stays Opus (it makes the call). Unit-tested (downgrade matrix + PRD-authoring routes Sonnet
+  on small / Opus on medium).
+- **COST bands ✅ (2026-06-19):** `evals.run --max-cost <ceiling>` fails the run if any case tops a
+  per-case dollar ceiling — the "drifted up a tier" regression guard (§10); reported with headroom
+  even on pass. Gate-tested ($0 mock). Wire a per-persona ceiling into CI alongside `--min-pass`.
+- **M4 exit-gate quality/cost items: all cleared.** The substantive gate work (merge + idempotency,
+  over-decomposition, scope creep, tier downgrade, COST bands, injection hygiene) is done. Remaining
+  M4 polish is optional: containing the agent *process* (not just the test command) for untrusted
+  input — run `claude` in-container / SDK SandboxSettings — and live cost/story COST bands on a real
+  coding run (the mechanism exists; needs a live pass to set the numbers). **82 tests green.**
 
 **Open decisions blocking later milestones:** D1 (M5 human-I/O channel). D5/D6 resolved.
 See the Decisions tracker at the bottom.

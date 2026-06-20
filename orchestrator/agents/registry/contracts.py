@@ -25,6 +25,13 @@ class BriefOutput(BaseModel):
     problem: str
     target_users: str
     ui_impacting: bool = Field(description="Whether the feature plausibly touches the UI.")
+    complexity: Literal["small", "medium", "large"] = Field(
+        description="Honest read of the WHOLE feature's build size. small = a focused change "
+        "(most single-control UI tweaks: a toggle, a button, a setting); medium = several "
+        "coordinated slices; large = a substantial multi-part feature. This is an early cost "
+        "signal — the downstream reasoning stages run on a cheaper model for small features, "
+        "so do NOT inflate it."
+    )
 
 
 class BugPriorityOutput(BaseModel):

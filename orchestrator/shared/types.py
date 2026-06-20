@@ -52,6 +52,7 @@ class Brief:
     target_users: str
     ui_impacting: bool          # gates the conditional UX-mocks stage
     project: str = ""           # Project Profile id, carried so later stages (council) keep context
+    complexity: str = ""        # PM's early whole-feature scope read (small|medium|large); drives the Opus→Sonnet downgrade for small features
     cost_tokens: int = 0
     cost_usd: float = 0.0
 
@@ -79,6 +80,7 @@ class PRD:
     content: str
     open_issues: list[str] = field(default_factory=list)
     project: str = ""           # Project Profile id, carried for downstream agent context
+    complexity: str = ""        # carried from the brief; drives the Opus→Sonnet tier downgrade on small features
     cost_tokens: int = 0
     cost_usd: float = 0.0
 

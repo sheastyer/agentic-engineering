@@ -1,6 +1,7 @@
 """Eval-harness plumbing tests ($0, mock provider). Validates the harness/runner/report
 machinery — not model quality (that needs a live run + the D5 scoring decision)."""
 
+import sys
 from pathlib import Path
 
 from evals.harness import (
@@ -61,7 +62,20 @@ def test_operator_assertions_for_free_text_fields():
     assert not _assert_field("hi", {"min_len": 5})
     assert _assert_field("positive", {"in": ["positive", "neutral"]})
     assert _assert_field(["a", "b", "c"], {"min_items": 2}) and not _assert_field(["a"], {"min_items": 2})
+    assert _assert_field(["a"], {"max_items": 2}) and not _assert_field(["a", "b", "c"], {"max_items": 2})
     assert _assert_field("bug", "bug") and not _assert_field("bug", "feature")  # scalar == still works
+
+
+def test_cost_band_gate_fails_when_a_case_exceeds_the_ceiling(monkeypatch):
+    """The COST band (§10): `--max-cost` exits non-zero when a case's cost tops the per-case
+    ceiling (the 'drifted up a tier' regression guard), and zero when it's within band."""
+    import evals.run as run_cli
+
+    base = ["prog", "--persona", "triage", "--provider", "mock"]
+    monkeypatch.setattr(sys, "argv", base + ["--max-cost", "1.0"])
+    assert run_cli.main() == 0          # mock triage costs a fraction of a cent — within band
+    monkeypatch.setattr(sys, "argv", base + ["--max-cost", "0.0"])
+    assert run_cli.main() == 1          # ceiling 0 → every nonzero-cost case trips the band
 
 
 # --- LLM-judge (D5) ------------------------------------------------------------

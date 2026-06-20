@@ -40,6 +40,10 @@ def main() -> int:
     parser.add_argument("--cases", default=None, help="path to cases.jsonl")
     parser.add_argument("--min-pass", type=float, default=1.0,
                         help="min assertion pass-rate for exit 0 (D5 will set real bars)")
+    parser.add_argument("--max-cost", type=float, default=None,
+                        help="COST band: per-case dollar ceiling. Exit non-zero if any case "
+                             "exceeds it — catches a persona drifting up a tier (e.g. triage "
+                             "onto Opus). Set per persona from its observed tier-appropriate cost.")
     parser.add_argument("--judge", action="store_true",
                         help="also gate on the LLM-judge's must-have criteria (subjective "
                              "personas like pm_write_prd; needs a live provider). See evals/judge.py.")
@@ -95,6 +99,16 @@ def main() -> int:
         print(f"  {r.id:<22} {con:<5} {asrt:<7}{jcell} {r.cost_usd:<9.5f} {r.model}{fails}")
 
     print("  " + "-" * 60)
+    # COST band: fail if any case's cost exceeds the per-case ceiling (the "drifts up a tier"
+    # regression guard, §10). Reported even when it passes so the headroom is visible.
+    cost_ok = True
+    if args.max_cost is not None:
+        over = [(r.id, r.cost_usd) for r in report.results if r.cost_usd > args.max_cost]
+        cost_ok = not over
+        verdict = "ok" if cost_ok else "FAIL"
+        print(f"  COST band: {verdict}  (ceiling ${args.max_cost:.5f}/case; "
+              f"max observed ${max((r.cost_usd for r in report.results), default=0.0):.5f})"
+              + ("  ← " + ", ".join(f"{cid} ${c:.5f}" for cid, c in over) if over else ""))
     judge_ok = True
     judge_cost = 0.0
     if args.judge:
@@ -108,7 +122,8 @@ def main() -> int:
               f"judge cost: ${judge_cost:.4f}   combined: ${report.total_cost + judge_cost:.4f}")
     print()
 
-    ok = report.con_rate == 1.0 and report.assertion_pass_rate >= args.min_pass and judge_ok
+    ok = (report.con_rate == 1.0 and report.assertion_pass_rate >= args.min_pass
+          and judge_ok and cost_ok)
     return 0 if ok else 1
 
 

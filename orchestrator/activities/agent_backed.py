@@ -46,6 +46,16 @@ from orchestrator.shared.types import (
 )
 
 
+def _tier_for(default_tier: str, complexity: str) -> str:
+    """Reasoning cost lever (§10): the Opus stages (PRD authoring, architect review, story
+    planning) dominate a feature's reasoning tokens, but a small, well-scoped feature doesn't
+    need Opus — downgrade it to Sonnet. Medium / large / unknown complexity keep the default
+    tier, so anything non-trivial is unaffected."""
+    if default_tier == "opus" and complexity == "small":
+        return "sonnet"
+    return default_tier
+
+
 def triage_with_runner(provider: ModelProvider, event: FeedbackEvent) -> Triage:
     """Real triage via the Agent Runner. Pure (provider injected) for $0 unit testing."""
     profile = load_profile(event.project)
@@ -85,6 +95,7 @@ def draft_brief_with_runner(provider: ModelProvider, event: FeedbackEvent) -> Br
         problem=out.problem,
         target_users=out.target_users,
         ui_impacting=out.ui_impacting,
+        complexity=out.complexity,  # early scope signal — drives the Opus→Sonnet downgrade downstream
         project=event.project,
         cost_tokens=result.input_tokens + result.output_tokens,
         cost_usd=result.cost_usd,
@@ -169,7 +180,9 @@ def author_prd_with_runner(provider: ModelProvider, brief: Brief) -> PRD:
         f"- UI-impacting: {brief.ui_impacting}"
     )
 
-    result = AgentRunner(provider).run(persona, profile, task_input)
+    result = AgentRunner(provider).run(
+        persona, profile, task_input, tier=_tier_for(persona.tier, brief.complexity)
+    )
     out: PRDAuthoringOutput = result.payload
     return PRD(
         feature_id=feature_id(brief.summary),
@@ -177,6 +190,7 @@ def author_prd_with_runner(provider: ModelProvider, brief: Brief) -> PRD:
         content=out.content,
         open_issues=out.open_issues,
         project=brief.project,
+        complexity=brief.complexity,  # carried so the architect stages reuse the same tier lever
         cost_tokens=result.input_tokens + result.output_tokens,
         cost_usd=result.cost_usd,
     )
@@ -208,6 +222,7 @@ def revise_prd_with_runner(provider: ModelProvider, prd: PRD, review: ArchitectR
         content=out.content,
         open_issues=out.open_issues,
         project=prd.project,
+        complexity=prd.complexity,  # preserved across revisions so the tier lever persists
         cost_tokens=result.input_tokens + result.output_tokens,
         cost_usd=result.cost_usd,
     )
@@ -231,7 +246,9 @@ def review_prd_with_runner(provider: ModelProvider, prd: PRD, pass_no: int) -> A
         f"Open issues flagged by the author:\n{open_issues}"
     )
 
-    result = AgentRunner(provider).run(persona, profile, task_input)
+    result = AgentRunner(provider).run(
+        persona, profile, task_input, tier=_tier_for(persona.tier, prd.complexity)
+    )
     out: ArchitectReviewOutput = result.payload
     return ArchitectReview(
         approved=out.approved,
@@ -260,7 +277,9 @@ def plan_stories_with_runner(provider: ModelProvider, prd: PRD, report: Research
         f"(from {len(report.findings)} personas)"
     )
 
-    result = AgentRunner(provider).run(persona, profile, task_input)
+    result = AgentRunner(provider).run(
+        persona, profile, task_input, tier=_tier_for(persona.tier, prd.complexity)
+    )
     out: StoryPlanOutput = result.payload
     stories = [
         Story(id=f"{prd.feature_id}-S{i + 1}", title=s.title, estimate=s.estimate)
