@@ -188,7 +188,8 @@ class PRResult:
 @dataclass
 class DeployResult:
     deployed: bool
-    ref: str                    # PR url / release tag / container digest
+    ref: str                    # PR url / release tag / container digest / merged branch
+    note: str = ""
     cost_tokens: int = 0
     cost_usd: float = 0.0
 

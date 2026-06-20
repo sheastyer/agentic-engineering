@@ -27,9 +27,16 @@ from orchestrator.agents.coding.pr_target import PRTarget, build_pr_target
 from orchestrator.agents.coding.sandbox import Sandbox
 from orchestrator.agents.coding.types import CodingTask
 from orchestrator.projects.loader import load_profile
-from orchestrator.projects.profile import ProjectProfile
+from orchestrator.projects.profile import DeployKind, ProjectProfile
 from orchestrator.shared.config import CODING_MAX_BUDGET_USD, CODING_MAX_TURNS
-from orchestrator.shared.types import FeedbackEvent, PRResult, Story, StoryPlan, StoryResult
+from orchestrator.shared.types import (
+    DeployResult,
+    FeedbackEvent,
+    PRResult,
+    Story,
+    StoryPlan,
+    StoryResult,
+)
 
 
 def _failed_story(story_id: str, exc: Exception) -> StoryResult:
@@ -195,3 +202,31 @@ async def open_pr_agent(project: str, branch: str, story_results: list[StoryResu
     (local dry-run vs real GitHub) is chosen by CODING_PR_TARGET."""
     profile = load_profile(project)
     return open_pr_with_target(build_pr_target(), project, branch, story_results, profile)
+
+
+def deploy_with_target(
+    target: PRTarget, project: str, branch: str, profile: ProjectProfile
+) -> DeployResult:
+    """Honor the profile's deploy kind (D6). MERGE → merge the pod's PR via the target
+    (idempotent on the branch key, so a Temporal retry can't double-deploy). Any other kind
+    (e.g. OPEN_PR) means the PR itself is the deliverable — nothing further to ship. Pure
+    (target injected) for $0 unit testing."""
+    if profile.deploy.kind == DeployKind.MERGE:
+        return target.merge(
+            repo_source=profile.repo.git_remote,
+            base_branch=profile.repo.default_branch,
+            branch=branch,
+        )
+    return DeployResult(
+        deployed=True, ref=branch,
+        note=f"deploy kind {profile.deploy.kind.value}: the PR is the deliverable (no merge)",
+    )
+
+
+@activity.defn(name="deploy")
+async def deploy_agent(project: str, branch: str) -> DeployResult:
+    """Live deploy — the human-gated ship step (§9.2). For meal-planner (deploy.kind=MERGE)
+    it merges the pod's PR to the default branch; idempotent so a retry after a crash can't
+    merge twice. Registered under the stub's name so the swap is a one-liner."""
+    profile = load_profile(project)
+    return deploy_with_target(build_pr_target(), project, branch, profile)

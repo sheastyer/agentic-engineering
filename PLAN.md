@@ -26,7 +26,9 @@ whole story plan in one workspace** (the earlier `CODING_MAX_STORIES=1` cap ship
 feature — no toggle) and validated 2026-06-19: the full thread opened **meal-planner PR #4** —
 a *complete* dark-mode feature (accessible toggle, FOUC-prevention, system-pref activation,
 component refactor, Playwright tests) for ~$1.87 coding + ~$0.38 reasoning. Reasoning traces are
-now **persisted** (Temporal `--db-filename` + `cli.trace --save` → SQLite). **73 tests green** (~13s).
+now **persisted** (Temporal `--db-filename` + `cli.trace --save` → SQLite). The pod's PR side-effects
+are now **idempotent** and the human-gated **merge deploy** (D6) is implemented (open-twice → one PR,
+merge-twice → one merge). **77 tests green** (~13s).
 
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`
@@ -225,13 +227,24 @@ now **persisted** (Temporal `--db-filename` + `cli.trace --save` → SQLite). **
   thrown away ~12 min of edits); (b) **pod `cost_usd` roll-up** (was reporting reasoning only);
   (c) **per-run unique branch tag** (no remote collision on re-runs). Reasoning traces are persisted
   via Temporal `--db-filename` + `cli.trace --save` → `trace_artifacts` SQLite table.
+- **PR merge + idempotency ✅ (2026-06-19):** D6's merge half is now real. `PRTarget` grew a
+  `merge(repo_source, base_branch, branch)` method; `GitHubPRTarget.merge` runs `gh pr merge`
+  and is **idempotent on the branch key** (an already-`MERGED` branch returns success without
+  re-merging), and `GitHubPRTarget.open` now **probes for an existing PR** on the head branch
+  before creating (a Temporal retry after a crash returns the existing PR, never a duplicate).
+  A new agent-backed `deploy` activity (`coding_backed.deploy_with_target` / `deploy_agent`,
+  swapped under `USE_AGENT_CODING`) dispatches on `profile.deploy.kind`: `MERGE` → merge the
+  pod's PR; any other kind → the PR *is* the deliverable (no merge). `LocalPRTarget.merge` is a
+  $0 dry run. **DET idempotency tests** (`test_coding_activities.py`, +4): open-twice → one PR,
+  merge-twice → one merge (via an in-memory `_FakeRemote` mirroring the check-before-act
+  contract), non-MERGE kind doesn't touch the remote, local dry-run merge. **77 tests green.**
 - **Still owed before the M4 exit gate:** (1) the architect **over-decomposes simple features**
   (~10 stories incl. axe-core contrast tests for "add a toggle"), inflating coding cost/scope — add
   a complexity/scope signal; (2) the coding prompt's "`npm test` must pass" causes **test-infra
-  scope creep** (the agent adds Playwright + a lockfile diff) — relax or scope it; (3) **PR merge**
-  side-effect with idempotency keys (open done; merge is the human-gated deploy); (4) cost/story
-  COST bands + injection fixtures; (5) drop reasoning Opus→Sonnet on simple features (the Opus
-  brief/PRD/arch/story-plan stages are the bulk of reasoning tokens).
+  scope creep** (the agent adds Playwright + a lockfile diff) — relax or scope it; (3) cost/story
+  COST bands + injection fixtures; (4) drop reasoning Opus→Sonnet on simple features (the Opus
+  brief/PRD/arch/story-plan stages are the bulk of reasoning tokens). (PR merge + idempotency:
+  ✅ done — see above. Remaining items are quality/cost tuning, not gate blockers.)
 
 **Open decisions blocking later milestones:** D1 (M5 human-I/O channel). D5/D6 resolved.
 See the Decisions tracker at the bottom.

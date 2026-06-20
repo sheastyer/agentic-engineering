@@ -32,7 +32,7 @@ from orchestrator.projects.profile import (
     Repo,
     Stack,
 )
-from orchestrator.shared.types import Story, StoryResult
+from orchestrator.shared.types import DeployResult, PRResult, Story, StoryResult
 
 TEST_COMMAND = f"{sys.executable} -m pytest -q verify.py"
 FIX = FileEdit(path="mathlib.py", find="return a - b", replace="return a + b")
@@ -67,7 +67,11 @@ def _seeded_git_repo(tmp_path) -> str:
     return str(repo)
 
 
-def _profile(local_path: str = "", git_remote: str = "file:///unused") -> ProjectProfile:
+def _profile(
+    local_path: str = "",
+    git_remote: str = "file:///unused",
+    deploy_kind: DeployKind = DeployKind.OPEN_PR,
+) -> ProjectProfile:
     return ProjectProfile(
         id="fixture",
         name="Fixture",
@@ -75,8 +79,37 @@ def _profile(local_path: str = "", git_remote: str = "file:///unused") -> Projec
         repo=Repo(git_remote=git_remote, default_branch="main", local_path=local_path),
         stack=Stack(languages=["python"], package_manager="pip", test_command=TEST_COMMAND),
         intake=Intake(kind=IntakeKind.MANUAL),
-        deploy=Deploy(kind=DeployKind.OPEN_PR),
+        deploy=Deploy(kind=deploy_kind),
     )
+
+
+class _FakeRemote:
+    """In-memory model of the PR remote, mirroring GitHubPRTarget's check-before-act
+    idempotency: open and merge are keyed on the *branch* and each fires at most once for a
+    given branch, so a re-invocation (a Temporal retry after a crash) is a no-op."""
+
+    name = "fake"
+
+    def __init__(self) -> None:
+        self.prs: dict[str, str] = {}     # branch -> url
+        self.merged: set[str] = set()
+        self.creates = 0
+        self.merges = 0
+
+    def open(self, *, repo_source, base_branch, branch, diffs, title, body) -> PRResult:
+        if branch in self.prs:
+            return PRResult(opened=True, url=self.prs[branch], branch=branch, note="existing (idempotent)")
+        self.creates += 1
+        url = f"https://fake/pr/{branch}"
+        self.prs[branch] = url
+        return PRResult(opened=True, url=url, branch=branch, note="opened")
+
+    def merge(self, *, repo_source, base_branch, branch) -> DeployResult:
+        if branch in self.merged:
+            return DeployResult(deployed=True, ref=branch, note="already merged (idempotent)")
+        self.merges += 1
+        self.merged.add(branch)
+        return DeployResult(deployed=True, ref=branch, note="merged")
 
 
 async def test_implement_story_done_when_fix_makes_tests_pass(tmp_path):
@@ -125,6 +158,45 @@ def test_open_pr_not_opened_when_no_diffs(tmp_path):
         _profile(git_remote=repo),
     )
     assert pr.opened is False
+
+
+def test_open_pr_idempotent_on_branch_key():
+    """M4 idempotency (§9.7): re-running open_pr with the same branch key opens at most one PR
+    (a Temporal retry after a crash must not create a duplicate)."""
+    fake = _FakeRemote()
+    profile = _profile()
+    results = [StoryResult(story_id="S1", status="done", pr_ref="", diff="patch", summary="s")]
+    first = open_pr_with_target(fake, "fixture", "agentic/feat-1", results, profile)
+    second = open_pr_with_target(fake, "fixture", "agentic/feat-1", results, profile)
+    assert fake.creates == 1            # opened once, not twice
+    assert first.url == second.url      # the retry returns the existing PR
+
+
+def test_deploy_merge_idempotent_on_branch_key():
+    """M4 idempotency: a MERGE-kind deploy merges the branch at most once across retries."""
+    from orchestrator.activities.coding_backed import deploy_with_target
+
+    fake = _FakeRemote()
+    profile = _profile(deploy_kind=DeployKind.MERGE)
+    a = deploy_with_target(fake, "fixture", "agentic/feat-1", profile)
+    b = deploy_with_target(fake, "fixture", "agentic/feat-1", profile)
+    assert fake.merges == 1             # merged once, not twice
+    assert a.deployed and b.deployed
+
+
+def test_deploy_open_pr_kind_does_not_merge():
+    """A non-MERGE deploy kind (the PR is the deliverable) ships without touching the remote."""
+    from orchestrator.activities.coding_backed import deploy_with_target
+
+    fake = _FakeRemote()
+    res = deploy_with_target(fake, "fixture", "agentic/feat-1", _profile(deploy_kind=DeployKind.OPEN_PR))
+    assert res.deployed and fake.merges == 0
+
+
+def test_local_pr_target_merge_is_a_dry_run():
+    """The default (off-by-default-real) target merges as a dry run — deploy is reachable at $0."""
+    res = LocalPRTarget().merge(repo_source="file:///unused", base_branch="main", branch="agentic/x")
+    assert res.deployed and "dry-run" in res.note
 
 
 async def test_implement_plan_codes_whole_feature_in_one_pass(tmp_path):

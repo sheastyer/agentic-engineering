@@ -11,11 +11,12 @@ workflow (R3). Deploy/merge is a *separate*, human-gated step (§9.2); this only
 """
 
 import os
+import shutil
 import subprocess
 import tempfile
 from typing import Protocol
 
-from orchestrator.shared.types import PRResult
+from orchestrator.shared.types import DeployResult, PRResult
 
 _GIT_ID = '-c user.email=org@agentic.local -c user.name="agentic org"'
 
@@ -31,6 +32,18 @@ class PRTarget(Protocol):
         title: str,
         body: str,
     ) -> PRResult: ...
+
+    def merge(
+        self,
+        *,
+        repo_source: str,
+        base_branch: str,
+        branch: str,
+    ) -> DeployResult:
+        """Merge the PR opened from `branch` (the human-gated deploy step, §9.2). Keyed on
+        the branch so it is **idempotent** — a Temporal retry after a crash re-runs this
+        activity, and an already-merged branch must not merge (or re-merge) a second time."""
+        ...
 
 
 def _run(command: str, cwd: str | None = None, timeout: int = 600) -> subprocess.CompletedProcess:
@@ -97,6 +110,14 @@ class LocalPRTarget:
             note="local dry-run PR (cloned, applied, committed; not pushed)",
         )
 
+    def merge(self, *, repo_source, base_branch, branch) -> DeployResult:
+        """Dry-run merge — proves the deploy step is reachable without touching the remote."""
+        return DeployResult(
+            deployed=True,
+            ref=f"local-merge://{branch}->{base_branch}",
+            note="local dry-run merge (not pushed)",
+        )
+
 
 class GitHubPRTarget:
     """The real outward-facing path: push the branch to origin and `gh pr create`. Selected
@@ -112,6 +133,12 @@ class GitHubPRTarget:
             checkout, _ = _prepare_branch(repo_source, branch, diffs, body)
         except RuntimeError as exc:
             return PRResult(opened=False, branch=branch, note=str(exc))
+
+        # Idempotency (R7 / §9.7): the branch is the key. If a PR already exists for this head
+        # (a Temporal retry after a crash), return it instead of opening a duplicate.
+        existing = _existing_pr_url(checkout, branch)
+        if existing:
+            return PRResult(opened=True, url=existing, branch=branch, note="existing PR for branch (idempotent)")
 
         push = _run(f"git push -u origin {_q(branch)}", cwd=checkout)
         if push.returncode != 0:
@@ -131,6 +158,41 @@ class GitHubPRTarget:
             )
         url = pr.stdout.strip().splitlines()[-1] if pr.stdout.strip() else ""
         return PRResult(opened=True, url=url, branch=branch, note="opened via gh")
+
+    def merge(self, *, repo_source, base_branch, branch) -> DeployResult:
+        """`gh pr merge` the branch's PR — idempotent: an already-MERGED branch returns success
+        without merging again, so a Temporal retry can't double-deploy."""
+        root = tempfile.mkdtemp(prefix="agentic-merge-")
+        checkout = os.path.join(root, "repo")
+        try:
+            clone = _run(f"git clone --depth 1 {_q(repo_source)} {_q(checkout)}", cwd=root)
+            if clone.returncode != 0:
+                return DeployResult(deployed=False, ref=branch, note=f"clone failed: {clone.stderr.strip()}")
+            state = _run(
+                f"gh pr view {_q(branch)} --json state --jq .state", cwd=checkout
+            ).stdout.strip()
+            if state == "MERGED":
+                return DeployResult(deployed=True, ref=branch, note="already merged (idempotent)")
+            res = _run(f"gh pr merge {_q(branch)} --merge", cwd=checkout)
+            if res.returncode != 0:
+                return DeployResult(
+                    deployed=False, ref=branch,
+                    note=f"merge failed: {res.stderr.strip() or res.stdout.strip()}",
+                )
+            return DeployResult(deployed=True, ref=branch, note="merged via gh")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+def _existing_pr_url(checkout: str, branch: str) -> str:
+    """The url of any PR already open (or merged) for `branch`, else "" — the idempotency
+    probe. Runs in a gh-aware checkout. Failures (gh absent, no auth) degrade to "" so the
+    caller proceeds to a normal open; the worst case is gh's own duplicate-PR guard."""
+    res = _run(
+        f"gh pr list --head {_q(branch)} --state all --json url --jq '.[0].url // \"\"'",
+        cwd=checkout,
+    )
+    return res.stdout.strip() if res.returncode == 0 else ""
 
 
 def build_pr_target() -> PRTarget:
