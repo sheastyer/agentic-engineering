@@ -83,7 +83,7 @@ def _assert_field(actual: Any, spec: Any) -> bool:
     A scalar spec is exact-equality (the original behavior — covers enums/bools/ints). A
     dict spec is an operator map for free-text fields where `==` doesn't fit (PRD prose,
     injection-resistance). Supported ops (string compares are case-insensitive):
-      equals · contains · not_contains · contains_any · in · min_len · min_items
+      equals · contains · not_contains · contains_any · in · min_len · min_items · max_items
     `contains`/`not_contains` accept a string or a list (all/none must match resp.);
     `min_len` is string length, `min_items` is collection length.
     """
@@ -109,6 +109,8 @@ def _assert_field(actual: Any, spec: Any) -> bool:
         if op == "min_len" and len(text) < arg:
             return False
         if op == "min_items" and len(actual or []) < arg:
+            return False
+        if op == "max_items" and len(actual or []) > arg:
             return False
     return True
 
@@ -204,8 +206,9 @@ def _mock_value(spec: Any, annotation: Any) -> Any:
         return spec["equals"]
     if "in" in spec:
         return spec["in"][0]
-    if "min_items" in spec:
-        return [_default_item(annotation) for _ in range(spec["min_items"])]
+    if "min_items" in spec or "max_items" in spec:
+        # Generate min_items (or one) elements — within any max_items ceiling for sane specs.
+        return [_default_item(annotation) for _ in range(spec.get("min_items", 1))]
     needles = []
     for op in ("contains", "contains_any"):
         if op in spec:

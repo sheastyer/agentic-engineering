@@ -8,7 +8,7 @@ replay-serialized workflow data.
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class TriageOutput(BaseModel):
@@ -99,12 +99,38 @@ class PlannedStory(BaseModel):
     )
 
 
+# Story-count ceiling per declared complexity — the scope signal that stops the architect
+# over-decomposing a simple feature (the ~10-story "add a toggle" plan, incl. standalone
+# accessibility-audit stories). Enforced in the validator so a violation re-asks the model.
+_COMPLEXITY_MAX_STORIES = {"small": 3, "medium": 6, "large": 10}
+
+
 class StoryPlanOutput(BaseModel):
+    complexity: Literal["small", "medium", "large"] = Field(
+        description="Your honest read of the WHOLE feature's build size, which bounds how many "
+        "stories are reasonable. small = a focused change one engineer ships in a sitting "
+        "(most UI tweaks: a toggle, a button, a setting); medium = several coordinated slices; "
+        "large = a substantial multi-part feature. Do NOT inflate this to justify more stories."
+    )
     stories: list[PlannedStory] = Field(
         description="The PRD broken into independently shippable, vertically-sliced stories, "
         "ordered by a sensible build sequence and collectively covering its acceptance "
-        "criteria without inventing scope."
+        "criteria without inventing scope. Prefer the FEWEST slices that deliver the feature."
     )
+
+    @model_validator(mode="after")
+    def _bound_stories_to_complexity(self) -> "StoryPlanOutput":
+        if not self.stories:
+            raise ValueError("a plan must contain at least one story")
+        ceiling = _COMPLEXITY_MAX_STORIES[self.complexity]
+        if len(self.stories) > ceiling:
+            raise ValueError(
+                f"a {self.complexity} feature should be at most {ceiling} stories, got "
+                f"{len(self.stories)}. Fold testing/accessibility/CI/docs criteria into the "
+                "implementing stories rather than making them standalone stories — or, if the "
+                "feature genuinely is larger, raise the complexity."
+            )
+        return self
 
 
 class PRDRevisionOutput(BaseModel):

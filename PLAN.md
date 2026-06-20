@@ -238,13 +238,23 @@ merge-twice → one merge). **77 tests green** (~13s).
   $0 dry run. **DET idempotency tests** (`test_coding_activities.py`, +4): open-twice → one PR,
   merge-twice → one merge (via an in-memory `_FakeRemote` mirroring the check-before-act
   contract), non-MERGE kind doesn't touch the remote, local dry-run merge. **77 tests green.**
-- **Still owed before the M4 exit gate:** (1) the architect **over-decomposes simple features**
-  (~10 stories incl. axe-core contrast tests for "add a toggle"), inflating coding cost/scope — add
-  a complexity/scope signal; (2) the coding prompt's "`npm test` must pass" causes **test-infra
-  scope creep** (the agent adds Playwright + a lockfile diff) — relax or scope it; (3) cost/story
-  COST bands + injection fixtures; (4) drop reasoning Opus→Sonnet on simple features (the Opus
-  brief/PRD/arch/story-plan stages are the bulk of reasoning tokens). (PR merge + idempotency:
-  ✅ done — see above. Remaining items are quality/cost tuning, not gate blockers.)
+- **Architect over-decomposition fixed ✅ (2026-06-19):** the architect inflated simple features
+  into ~10 stories (incl. standalone accessibility-audit stories for "add a toggle"), driving
+  coding cost/scope. Added a **complexity/scope signal**: `StoryPlanOutput` now requires a
+  `complexity` field (small|medium|large) and a `model_validator` **enforces a story-count ceiling
+  per complexity** (small→3, medium→6, large→10) — a violation re-asks the model (the runner's
+  bounded re-ask, via the provider's parse-failure path), so an over-decomposed plan can't ship.
+  The prompt teaches the bounding ("most UI changes are small") and **forbids standalone
+  testing/accessibility/CI/docs stories** (fold them into the implementing story). `complexity` is
+  threaded onto `StoryPlan` (traced for cost analysis) and shown in `cli.trace`. New eval case
+  `clear-week-plan` (a trivial single-action feature must read `small` ≤3 stories) + a `max_items`
+  harness operator + contract unit tests. **78 tests green.**
+- **Still owed before the M4 exit gate:** (1) the coding prompt's "`npm test` must pass" causes
+  **test-infra scope creep** (the agent adds Playwright + a lockfile diff) — relax or scope it;
+  (2) cost/story COST bands + injection fixtures; (3) drop reasoning Opus→Sonnet on simple features
+  (the Opus brief/PRD/arch/story-plan stages are the bulk of reasoning tokens). (PR merge +
+  idempotency ✅ and architect over-decomposition ✅ — see above. Remaining items are quality/cost
+  tuning, not gate blockers.)
 
 **Open decisions blocking later milestones:** D1 (M5 human-I/O channel). D5/D6 resolved.
 See the Decisions tracker at the bottom.

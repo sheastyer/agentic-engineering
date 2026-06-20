@@ -51,6 +51,26 @@ def test_architect_personas_on_opus_tier():
     assert get_persona("architect_plan_stories").tier == "opus"
 
 
+def test_story_plan_complexity_bounds_count():
+    """The scope signal: the story-count ceiling per complexity is enforced at parse time so
+    an over-decomposed 'small' feature is rejected (→ runner re-asks), not silently shipped."""
+    import pydantic
+
+    from orchestrator.agents.registry.contracts import PlannedStory, StoryPlanOutput
+
+    def _stories(n: int) -> list[PlannedStory]:
+        return [PlannedStory(title=f"slice {i}", estimate=1) for i in range(n)]
+
+    # A small feature is capped at 3 stories — 3 is fine, 4 is rejected.
+    assert len(StoryPlanOutput(complexity="small", stories=_stories(3)).stories) == 3
+    with pytest.raises(pydantic.ValidationError):
+        StoryPlanOutput(complexity="small", stories=_stories(4))
+    # Larger complexities allow more; an empty plan is always rejected.
+    assert len(StoryPlanOutput(complexity="large", stories=_stories(10)).stories) == 10
+    with pytest.raises(pydantic.ValidationError):
+        StoryPlanOutput(complexity="medium", stories=_stories(0))
+
+
 # --- project profile -----------------------------------------------------------
 def test_profile_loads_and_validates():
     assert PROFILE.id == "meal-planner"
@@ -371,7 +391,7 @@ def test_plan_stories_activity_mints_ids_and_adapts_stories():
     from orchestrator.agents.registry.contracts import PlannedStory, StoryPlanOutput
     from orchestrator.shared.types import PRD, ResearchReport, StoryPlan
 
-    parsed = StoryPlanOutput(stories=[
+    parsed = StoryPlanOutput(complexity="medium", stories=[
         PlannedStory(title="backend: recommendation endpoint", estimate=3),
         PlannedStory(title="frontend: Surprise Me button", estimate=2),
     ])
@@ -388,5 +408,6 @@ def test_plan_stories_activity_mints_ids_and_adapts_stories():
     assert [s.title for s in plan.stories] == ["backend: recommendation endpoint",
                                                "frontend: Surprise Me button"]
     assert [s.estimate for s in plan.stories] == [3, 2]
+    assert plan.complexity == "medium"          # scope signal surfaced onto the workflow plan
     assert plan.cost_usd == pytest.approx(0.025)  # 2000×$5/1e6 + 600×$25/1e6
     assert provider.calls[0]["tier"] == "opus"

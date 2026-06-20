@@ -55,7 +55,7 @@ _VIEWS = {
     "pm_revise_prd": [("version", 4), ("content", 240)],
     "consumer_research_persona": [("persona", 28), ("sentiment", 10), ("notes", 220)],
     "synthesize_research": [("overall_sentiment", 10), ("summary_ref", 60)],
-    "architect_plan_stories": [("stories", 400)],
+    "architect_plan_stories": [("complexity", 8), ("stories", 400)],
     "implement_stories": [("story_id", 28), ("status", 8), ("summary", 200), ("cost_usd", 10)],
     "qa_review": [("passed", 6), ("notes", 200)],
     "open_pr": [("opened", 6), ("url", 200), ("note", 120)],

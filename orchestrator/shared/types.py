@@ -139,6 +139,7 @@ class StoryPlan:
     feature_id: str
     stories: list[Story]
     project: str = ""           # Project Profile id, carried so the pod can load the target repo
+    complexity: str = ""        # architect's whole-feature scope read (small|medium|large); bounds story count
     cost_tokens: int = 0
     cost_usd: float = 0.0
 
