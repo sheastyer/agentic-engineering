@@ -80,15 +80,25 @@ def build_activities() -> list:
 
         activities = _replace_by_name(activities, "pm_prioritize_bug", pm_prioritize_bug_agent)
         logging.info("USE_AGENT_BUG_PRIORITY: real PM bug prioritization (Haiku) via MODEL_PROVIDER=%s", provider)
+    if os.environ.get("USE_AGENT_REVIEW"):
+        from orchestrator.activities.agent_backed import review_diff_agent
+
+        activities = _replace_by_name(activities, "review_diff", review_diff_agent)
+        logging.info(
+            "USE_AGENT_REVIEW: real pre-PR code review (Sonnet, reasoning) via MODEL_PROVIDER=%s",
+            provider,
+        )
     if os.environ.get("USE_AGENT_CODING"):
         from orchestrator.activities.coding_backed import (
             deploy_agent,
             fix_bug_agent,
             implement_stories_agent,
             open_pr_agent,
+            revise_after_review_agent,
         )
 
         activities = _replace_by_name(activities, "implement_stories", implement_stories_agent)
+        activities = _replace_by_name(activities, "revise_after_review", revise_after_review_agent)
         activities = _replace_by_name(activities, "fix_bug", fix_bug_agent)
         activities = _replace_by_name(activities, "open_pr", open_pr_agent)
         activities = _replace_by_name(activities, "deploy", deploy_agent)

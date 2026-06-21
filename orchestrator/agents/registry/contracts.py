@@ -140,6 +140,24 @@ class StoryPlanOutput(BaseModel):
         return self
 
 
+class CodeReviewOutput(BaseModel):
+    approved: bool = Field(
+        description="True only if the diff correctly and completely implements the planned "
+        "stories, follows the project's conventions, and is safe to ship — no blocking issues."
+    )
+    required_changes: list[str] = Field(
+        default_factory=list,
+        description="Specific, actionable changes the developer must make before this can be "
+        "approved (empty iff approved). Each names a concrete problem — a missing story, a "
+        "bug, a convention violation, an untested edge case, a security/regression risk — not "
+        "vague unease. The developer revises against exactly these.",
+    )
+    summary: str = Field(
+        description="One or two sentences summarizing the review verdict for the PR body and "
+        "the human reviewer (what the diff does well and, if rejected, the gist of what's wrong)."
+    )
+
+
 class PRDRevisionOutput(BaseModel):
     content: str = Field(
         description="The full revised PRD body, edited to resolve every raised concern "

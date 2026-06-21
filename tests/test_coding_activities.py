@@ -239,6 +239,65 @@ async def test_coding_error_becomes_failed_story_not_a_retry(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_pod_review_loop_revises_before_opening_pr():
+    """The reviewer↔developer loop runs BEFORE the PR opens: a reviewer that rejects once then
+    approves must drive exactly one developer revision, and the PR is opened from the revised
+    (approved) diff with the review verdict recorded on the PodResult ($0 — stub overrides)."""
+    from temporalio import activity
+    from temporalio.testing import WorkflowEnvironment
+    from temporalio.worker import Worker
+
+    from orchestrator.shared.config import TASK_QUEUE
+    from orchestrator.shared.types import PRResult, ReviewResult, StoryPlan
+    from orchestrator.workflows.engineering_pod import EngineeringPodWorkflow
+    from tests.helpers import TEMPORAL_CLI, activities_with
+
+    calls = {"review": 0, "revise": 0, "pr_review_summary": None}
+
+    @activity.defn(name="review_diff")
+    async def review_reject_then_approve(plan: StoryPlan, story_result: StoryResult) -> ReviewResult:
+        calls["review"] += 1
+        if calls["review"] == 1:
+            return ReviewResult(approved=False, notes="needs work",
+                                required_changes=["persist the toggle"], cost_tokens=1)
+        return ReviewResult(approved=True, notes="LGTM after revision", cost_tokens=1)
+
+    @activity.defn(name="revise_after_review")
+    async def revise(plan: StoryPlan, story_result: StoryResult, review: ReviewResult) -> StoryResult:
+        calls["revise"] += 1
+        assert review.required_changes == ["persist the toggle"]  # the feedback reaches the developer
+        return StoryResult(story_id=plan.feature_id, status="done", pr_ref="",
+                           diff="revised diff", summary="addressed review", cost_tokens=1)
+
+    @activity.defn(name="open_pr")
+    async def capture_pr(project: str, branch: str, story_results, review_summary: str = "") -> PRResult:
+        calls["pr_review_summary"] = review_summary  # the final verdict lands in the PR body
+        return PRResult(opened=True, url=f"local://pr/{branch}", branch=branch, cost_tokens=1)
+
+    plan = StoryPlan(
+        feature_id="feat-x", project="meal-planner",
+        stories=[Story(id="S1", title="Add dark-mode toggle", estimate=2)],
+    )
+    overrides = {"review_diff": review_reject_then_approve,
+                 "revise_after_review": revise, "open_pr": capture_pr}
+
+    async with await WorkflowEnvironment.start_local(dev_server_existing_path=TEMPORAL_CLI) as env:
+        async with Worker(
+            env.client, task_queue=TASK_QUEUE,
+            workflows=[EngineeringPodWorkflow], activities=activities_with(overrides),
+        ):
+            pod = await env.client.execute_workflow(
+                EngineeringPodWorkflow.run, plan, id="pod-review-loop-test", task_queue=TASK_QUEUE
+            )
+
+    assert calls["revise"] == 1                       # exactly one revision (capped loop)
+    assert calls["review"] == 2                       # reviewed the original, then the revision
+    assert pod.review_approved is True                # PR opened only after approval
+    assert pod.story_result.diff == "revised diff"    # PR carries the revised, reviewed diff
+    assert calls["pr_review_summary"] == "LGTM after revision"
+
+
+@pytest.mark.asyncio
 async def test_pod_runs_one_agent_for_the_whole_plan():
     """The pod is a single coding pass over the ordered plan (no per-story fan-out): one
     story_result keyed by the feature id, and a PR opened from it."""

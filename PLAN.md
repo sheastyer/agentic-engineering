@@ -31,7 +31,11 @@ are now **idempotent** and the human-gated **merge deploy** (D6) is implemented 
 merge-twice → one merge). The reasoning plane now downgrades **Opus→Sonnet on small features** via an
 early `complexity` signal from the brief, and `evals.run --max-cost` adds a per-case **COST band**.
 The coding agent can now run **inside the container boundary** (`CODING_AGENT=claude_container`),
-so the agent process — not just the test command — is isolated from the host. **89 tests green** (~13s).
+so the agent process — not just the test command — is isolated from the host. The engineering pod
+now runs a **bounded code-review ↔ revise loop before opening the PR** (2026-06-20): a reasoning-plane
+`code_reviewer` (Sonnet, `USE_AGENT_REVIEW`) critiques the diff and the coding pod revises against its
+required changes, capped by `MAX_REVIEW_PASSES` (=1, a hard cost lever since each revise is a full
+coding run) — so the human at the deploy gate only ever sees an already-reviewed PR. **91 tests green** (~14s).
 
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`

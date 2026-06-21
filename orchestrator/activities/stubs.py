@@ -159,7 +159,35 @@ async def qa_review(story_results: list[StoryResult]) -> QAResult:
 
 
 @activity.defn
-async def open_pr(project: str, branch: str, story_results: list[StoryResult]) -> PRResult:
+async def review_diff(plan: StoryPlan, story_result: StoryResult) -> ReviewResult:
+    # Stub for the reviewer↔developer loop (runs BEFORE the PR opens). The agent-backed twin
+    # runs a reasoning-plane code reviewer over the diff. The stub approves so the loop is a
+    # no-op at $0; tests can override it to force a revise pass.
+    return ReviewResult(
+        approved=True, notes="(stub) LGTM — diff approved", required_changes=[], cost_tokens=90
+    )
+
+
+@activity.defn
+async def revise_after_review(
+    plan: StoryPlan, story_result: StoryResult, review: ReviewResult
+) -> StoryResult:
+    # Stub for the developer's revision pass — the agent-backed twin re-runs the coding pod
+    # with the reviewer's required changes appended. The stub echoes the prior result as "done".
+    return StoryResult(
+        story_id=story_result.story_id,
+        status="done",
+        pr_ref=story_result.pr_ref,
+        diff=story_result.diff,
+        summary=f"(stub) revised to address: {', '.join(review.required_changes) or 'review feedback'}",
+        cost_tokens=800,
+    )
+
+
+@activity.defn
+async def open_pr(
+    project: str, branch: str, story_results: list[StoryResult], review_summary: str = ""
+) -> PRResult:
     # Stub for the pod's PR-open step (M4). The agent-backed twin clones the target, applies
     # the story diffs, and opens a real (or local dry-run) PR. Always "opened" in M1.
     return PRResult(opened=True, url=f"local://pr/{branch}", branch=branch, cost_tokens=10)
@@ -221,6 +249,8 @@ ALL_ACTIVITIES = [
     architect_plan_stories,
     implement_stories,
     qa_review,
+    review_diff,
+    revise_after_review,
     open_pr,
     deploy,
     triage_feedback,

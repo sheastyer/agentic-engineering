@@ -174,6 +174,8 @@ class PodResult:
     qa: QAResult
     branch: str
     pr_url: str = ""            # the PR the pod opened (or a local dry-run ref)
+    review_approved: bool = True  # final code-review verdict (the reviewer<->developer loop ran BEFORE the PR opened)
+    review_notes: str = ""      # the reviewer's final summary, surfaced to the human at the deploy gate
     cost_tokens: int = 0
     cost_usd: float = 0.0
 
@@ -231,7 +233,8 @@ class BugPriority:
 @dataclass
 class ReviewResult:
     approved: bool
-    notes: str
+    notes: str                  # short human-readable verdict summary (goes into the PR body)
+    required_changes: list[str] = field(default_factory=list)  # actionable items the developer must address (empty iff approved)
     cost_tokens: int = 0
     cost_usd: float = 0.0
 
