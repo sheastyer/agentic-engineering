@@ -9,6 +9,7 @@ TASK_QUEUE = "agentic-org"
 MAX_PRD_PASSES = 3          # PRD <-> architect review loop
 MAX_SIGNOFF_REVISIONS = 2   # PM sign-off -> PRD revision loopback
 MAX_QA_FIX_PASSES = 0       # engineering pod QA -> fix loop (0 for the offline meal-planner: its tests can't run in the sandbox, so a fix pass can never go green and would just double coding cost; set 1 when the target has runnable tests)
+MAX_REVIEW_PASSES = 1       # engineering pod code-review -> revise loop, BEFORE the PR opens. The reviewer is a cheap reasoning-plane call, but each *revise* pass is a full coding re-run on the Claude subscription (§10) — so this is a hard cost lever; keep it at 1 (one chance to address review) unless coding spend is acceptable.
 
 # Engineering-pod activities run a real coding agent + the target's tests in a sandbox —
 # far longer than the 30s default for reasoning activities (common.py). Minutes, not seconds.

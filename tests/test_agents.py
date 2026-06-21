@@ -447,3 +447,34 @@ def test_plan_stories_activity_mints_ids_and_adapts_stories():
     assert plan.complexity == "medium"          # scope signal surfaced onto the workflow plan
     assert plan.cost_usd == pytest.approx(0.025)  # 2000×$5/1e6 + 600×$25/1e6
     assert provider.calls[0]["tier"] == "opus"
+
+
+# --- runner-backed code reviewer (pre-PR review loop, reasoning plane) ----------
+def test_review_diff_activity_adapts_contract_and_carries_required_changes():
+    from orchestrator.activities.agent_backed import review_diff_with_runner
+    from orchestrator.agents.registry.contracts import CodeReviewOutput
+    from orchestrator.shared.types import ReviewResult, Story, StoryPlan, StoryResult
+
+    parsed = CodeReviewOutput(
+        approved=False,
+        required_changes=["toggle has no persisted state", "missing aria-label"],
+        summary="Solid start but the toggle does not persist.",
+    )
+    provider = _FakeProvider(parsed, 1200, 200, model_id="claude-sonnet-4-6")  # sonnet $3/$15
+    plan = StoryPlan(
+        feature_id="feat-dark", project="meal-planner",
+        stories=[Story(id="feat-dark-S1", title="Add dark-mode toggle", estimate=2)],
+    )
+    result = StoryResult(story_id="feat-dark", status="done",
+                         pr_ref="", diff="--- a/x\n+++ b/x\n+toggle", summary="added toggle")
+
+    review = review_diff_with_runner(provider, plan, result)
+
+    assert isinstance(review, ReviewResult)
+    assert review.approved is False
+    assert review.required_changes == ["toggle has no persisted state", "missing aria-label"]
+    assert review.notes == "Solid start but the toggle does not persist."
+    assert review.cost_usd == pytest.approx(0.0066)  # 1200×$3/1e6 + 200×$15/1e6
+    # The diff and the planned story both reach the reviewer as task input.
+    sent = provider.calls[0]["messages"][0]["content"]
+    assert "Add dark-mode toggle" in sent and "+toggle" in sent

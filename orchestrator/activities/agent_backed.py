@@ -20,6 +20,7 @@ from orchestrator.agents.registry.contracts import (
     ArchitectReviewOutput,
     BriefOutput,
     BugPriorityOutput,
+    CodeReviewOutput,
     CouncilVoteOutput,
     PRDAuthoringOutput,
     PRDRevisionOutput,
@@ -39,11 +40,17 @@ from orchestrator.shared.types import (
     FeedbackKind,
     ResearchFinding,
     ResearchReport,
+    ReviewResult,
     Story,
     StoryPlan,
+    StoryResult,
     Triage,
     Vote,
 )
+
+# A diff can be large; cap what we feed the reviewer so review-prompt tokens stay bounded
+# (§10). The head of a unified diff carries the substance — file headers + the edits.
+_MAX_REVIEW_DIFF_CHARS = 14000
 
 
 def _tier_for(default_tier: str, complexity: str) -> str:
@@ -325,3 +332,40 @@ def prioritize_bug_with_runner(provider: ModelProvider, event: FeedbackEvent, tr
 async def pm_prioritize_bug_agent(event: FeedbackEvent, triage: Triage) -> BugPriority:
     """Live PM bug prioritization. Registered under the stub's name so the swap is a one-liner."""
     return prioritize_bug_with_runner(build_provider(), event, triage)
+
+
+def review_diff_with_runner(
+    provider: ModelProvider, plan: StoryPlan, story_result: StoryResult
+) -> ReviewResult:
+    """Real code review (Sonnet, reasoning plane) of the pod's diff — the reviewer half of the
+    pod's reviewer↔developer loop that runs BEFORE the PR opens. Reviewing a diff is single-shot
+    structured reasoning, so it runs through the Agent Runner (not the coding pod): cheap, exact
+    cost, no subscription-window draw. Pure (provider injected) for $0 unit testing."""
+    persona = get_persona("code_reviewer")
+    profile = load_profile(plan.project)
+    stories = "\n".join(f"{i}. {s.title}" for i, s in enumerate(plan.stories, 1))
+    diff = story_result.diff.strip() or "(the developer produced no diff)"
+    if len(diff) > _MAX_REVIEW_DIFF_CHARS:
+        diff = diff[:_MAX_REVIEW_DIFF_CHARS] + "\n…(diff truncated for review)…"
+    task_input = (
+        f"Planned stories this change must deliver:\n{stories}\n\n"
+        f"Developer's note: {story_result.summary or '(none)'}\n\n"
+        f"Unified diff under review:\n{diff}"
+    )
+
+    result = AgentRunner(provider).run(persona, profile, task_input)
+    out: CodeReviewOutput = result.payload
+    return ReviewResult(
+        approved=out.approved,
+        notes=out.summary,
+        required_changes=out.required_changes,
+        cost_tokens=result.input_tokens + result.output_tokens,
+        cost_usd=result.cost_usd,
+    )
+
+
+@activity.defn(name="review_diff")
+async def review_diff_agent(plan: StoryPlan, story_result: StoryResult) -> ReviewResult:
+    """Live code review of the pod's diff. Registered under the stub's name so the swap is a
+    one-liner. Reasoning plane (MODEL_PROVIDER), not the coding subscription."""
+    return review_diff_with_runner(build_provider(), plan, story_result)

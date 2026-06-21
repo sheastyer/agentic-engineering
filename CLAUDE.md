@@ -96,7 +96,8 @@ workspace per workflow run" for sandbox isolation (§9.6), but not yet decided (
                 Project Profile  ──┐          activities call ──►  Agent Runner  ──►  persona registry
                 (project-specific  │                              │                  (prompt+tools+model)
                  knowledge)        └──────────►  child workflows ──►  ConsumerResearch (fan-out)
-                                                                      EngineeringPod  (Agent SDK in worktrees)
+                                                                      EngineeringPod  (Agent SDK in worktrees;
+                                                                                       code-review ↔ revise loop pre-PR)
 ```
 
 - The target app is the **event source** (feedback) and the **deploy target**
@@ -198,7 +199,11 @@ Ordered stages (the HTML diagram is the canonical version once it exists):
 5. `ConsumerResearchWorkflow` (child, parallel fan-out across demographic personas)
 6. **PM sign-off** (signal); `revise` loops back into PRD revision
 7. `architect_plan_stories`
-8. `EngineeringPodWorkflow` (child, orchestrator-worker; Agent SDK per story → QA)
+8. `EngineeringPodWorkflow` (child, orchestrator-worker; one Agent-SDK coding pass over
+   the ordered stories → QA → **bounded code-review ↔ revise loop** (max
+   `MAX_REVIEW_PASSES`): a reasoning-plane `code_reviewer` critiques the diff and the
+   coding pod revises against it, so the PR is opened only after it's been reviewed →
+   `open_pr`)
 9. **Deploy approval** (signal) → `deploy` (via Project Profile's deploy target) → `SHIPPED`
 
 ### BugWorkflow (shorter)

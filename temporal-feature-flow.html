@@ -153,7 +153,7 @@
 
         <div class="step"><div class="n">7 · ACTIVITY</div><div class="t">architect_plan_stories</div></div>
         <div class="arrow">▼</div>
-        <div class="step child"><div class="n">8 · CHILD</div><div class="t">EngineeringPod <span class="tag child">orchestrator-worker</span></div><div class="d">Agent SDK per story → QA, bounded fix loop. Sandboxed container per run (M4).</div></div>
+        <div class="step child"><div class="n">8 · CHILD</div><div class="t">EngineeringPod <span class="tag child">orchestrator-worker</span></div><div class="d">One Agent-SDK coding pass over the ordered stories → QA (bounded fix loop) → bounded code-review ↔ revise loop (reasoning-plane reviewer, MAX_REVIEW_PASSES) → open_pr. Sandboxed container per run (M4).</div></div>
         <div class="arrow">▼</div>
         <div class="step gate"><div class="n">9 · GATE</div><div class="t">deploy approval <span class="tag gate">human gate</span><span class="tag timer">7d</span></div><div class="d">decline → HELD · timeout → ESCALATED</div></div>
         <div class="arrow">▼</div>

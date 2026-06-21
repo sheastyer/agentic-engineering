@@ -33,6 +33,7 @@ from orchestrator.shared.types import (
     DeployResult,
     FeedbackEvent,
     PRResult,
+    ReviewResult,
     Story,
     StoryPlan,
     StoryResult,
@@ -112,6 +113,22 @@ async def _run_coding(
     )
 
 
+def _revise_instruction(plan: StoryPlan, review: ReviewResult) -> str:
+    """Re-issue the whole-feature instruction with the reviewer's required changes appended.
+    The developer re-implements from a fresh clone (the workspace from the prior attempt is
+    already torn down — §9.6), so it must restate the feature AND fix what review flagged. The
+    prior diff is intentionally NOT fed back: re-coding the feature with the concrete required
+    changes is cleaner than patching a stale diff, and keeps the prompt bounded (§10)."""
+    changes = "\n".join(f"- {c}" for c in review.required_changes) or f"- {review.notes}"
+    return (
+        f"{_plan_instruction(plan)}\n\n"
+        "A code reviewer examined your previous implementation of this feature and is requiring "
+        "these changes before it can ship. Re-implement the feature so that every point below is "
+        "addressed, while still delivering all the stories above:\n"
+        f"{changes}"
+    )
+
+
 async def implement_plan_with_pod(
     agent: CodingAgent,
     plan: StoryPlan,
@@ -122,6 +139,23 @@ async def implement_plan_with_pod(
     """Implement the WHOLE story plan with a single agent in one workspace → one diff. Pure
     (agent + sandbox injected) for $0 unit testing."""
     return await _run_coding(agent, _plan_instruction(plan), plan.feature_id, profile, sandbox)
+
+
+async def revise_after_review_with_pod(
+    agent: CodingAgent,
+    plan: StoryPlan,
+    review: ReviewResult,
+    profile: ProjectProfile,
+    *,
+    sandbox: Sandbox | None = None,
+) -> StoryResult:
+    """The developer half of the reviewer↔developer loop: re-run the pod with the reviewer's
+    required changes folded into the instruction. One coding attempt in a fresh workspace, just
+    like the first pass — so it's another full subscription-window draw, which is why the loop
+    is hard-capped at MAX_REVIEW_PASSES (§10). Pure (agent + sandbox injected) for $0 testing."""
+    return await _run_coding(
+        agent, _revise_instruction(plan, review), plan.feature_id, profile, sandbox
+    )
 
 
 async def implement_story_with_pod(
@@ -144,6 +178,23 @@ async def implement_stories_agent(plan: StoryPlan) -> StoryResult:
     try:
         return await implement_plan_with_pod(
             build_coding_agent(), plan, profile, sandbox=build_sandbox()
+        )
+    except Exception as exc:  # noqa: BLE001 — deliberate: convert to a failed result, don't retry
+        return _failed_story(plan.feature_id, exc)
+
+
+@activity.defn(name="revise_after_review")
+async def revise_after_review_agent(
+    plan: StoryPlan, story_result: StoryResult, review: ReviewResult
+) -> StoryResult:
+    """Live developer revision: re-run the coding pod with the reviewer's required changes.
+    Registered under the stub's name so the swap is a one-liner. `story_result` is the prior
+    attempt (carried for the workflow's contract; the pod re-codes from a fresh clone). A
+    coding error returns a failed story (never raises) so it isn't retried 4x at full cost (§10)."""
+    profile = load_profile(plan.project)
+    try:
+        return await revise_after_review_with_pod(
+            build_coding_agent(), plan, review, profile, sandbox=build_sandbox()
         )
     except Exception as exc:  # noqa: BLE001 — deliberate: convert to a failed result, don't retry
         return _failed_story(plan.feature_id, exc)
@@ -179,13 +230,20 @@ def open_pr_with_target(
     branch: str,
     story_results: list[StoryResult],
     profile: ProjectProfile,
+    review_summary: str = "",
 ) -> PRResult:
     """Assemble the story diffs and open the PR via the injected target. Pure (target
-    injected) for $0 unit testing — a LocalPRTarget proves the assembly without pushing."""
+    injected) for $0 unit testing — a LocalPRTarget proves the assembly without pushing.
+    `review_summary` is the pod's pre-merge code-review verdict, recorded in the PR body so the
+    human at the deploy gate sees the diff was already reviewed and iterated on."""
     diffs = [r.diff for r in story_results if r.diff.strip()]
     summaries = "\n".join(f"- {r.story_id}: {r.summary}" for r in story_results)
     title = f"[agentic] {project}: {branch}"
-    body = f"Automated change from the agentic engineering pod.\n\nStories:\n{summaries}"
+    review_block = f"\n\nCode review (pre-merge): {review_summary}" if review_summary else ""
+    body = (
+        f"Automated change from the agentic engineering pod.\n\nStories:\n{summaries}"
+        f"{review_block}"
+    )
     return target.open(
         repo_source=profile.repo.git_remote,
         base_branch=profile.repo.default_branch,
@@ -197,11 +255,16 @@ def open_pr_with_target(
 
 
 @activity.defn(name="open_pr")
-async def open_pr_agent(project: str, branch: str, story_results: list[StoryResult]) -> PRResult:
+async def open_pr_agent(
+    project: str, branch: str, story_results: list[StoryResult], review_summary: str = ""
+) -> PRResult:
     """Live PR open. Registered under the stub's name so the swap is a one-liner. The target
-    (local dry-run vs real GitHub) is chosen by CODING_PR_TARGET."""
+    (local dry-run vs real GitHub) is chosen by CODING_PR_TARGET. `review_summary` records the
+    pod's pre-merge code-review verdict in the PR body."""
     profile = load_profile(project)
-    return open_pr_with_target(build_pr_target(), project, branch, story_results, profile)
+    return open_pr_with_target(
+        build_pr_target(), project, branch, story_results, profile, review_summary
+    )
 
 
 def deploy_with_target(
