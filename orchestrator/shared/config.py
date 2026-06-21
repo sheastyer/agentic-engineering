@@ -10,6 +10,14 @@ MAX_PRD_PASSES = 3          # PRD <-> architect review loop
 MAX_SIGNOFF_REVISIONS = 2   # PM sign-off -> PRD revision loopback
 MAX_QA_FIX_PASSES = 0       # engineering pod QA -> fix loop (0 for the offline meal-planner: its tests can't run in the sandbox, so a fix pass can never go green and would just double coding cost; set 1 when the target has runnable tests)
 MAX_REVIEW_PASSES = 1       # engineering pod code-review -> revise loop, BEFORE the PR opens. The reviewer is a cheap reasoning-plane call, but each *revise* pass is a full coding re-run on the Claude subscription (§10) — so this is a hard cost lever; keep it at 1 (one chance to address review) unless coding spend is acceptable.
+MAX_CI_FIX_PASSES = 1       # engineering pod CI gate -> fix loop, AFTER the PR opens. The org waits for the PR's real CI to conclude; on failure it feeds the failing checks back to the coding agent, pushes the fix to the SAME PR, and re-checks — bounded here because each pass is a full coding re-run on the subscription PLUS a CI wait (§10). If CI is still red after the cap, the workflow halts (does not merge) for a human.
+
+# CI gate (the org must not progress to merge past a red PR). The await-CI activity polls the
+# PR's checks until they conclude; these bound that poll. The activity's start-to-close timeout
+# (set in the workflow) must exceed CI_POLL_TIMEOUT. Read activity-side, so plain constants.
+CI_POLL_TIMEOUT_MINUTES = 20      # give up waiting for CI to conclude after this
+CI_POLL_INTERVAL_SECONDS = 20     # how often to re-query the PR's check status
+CI_ACTIVITY_TIMEOUT_MINUTES = 25  # start-to-close for the await_ci activity (> poll timeout)
 
 # Engineering-pod activities run a real coding agent + the target's tests in a sandbox —
 # far longer than the 30s default for reasoning activities (common.py). Minutes, not seconds.

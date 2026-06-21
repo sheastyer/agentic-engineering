@@ -49,6 +49,37 @@ async def test_happy_path_ships():
 
 
 @pytest.mark.asyncio
+async def test_ci_failure_halts_before_deploy():
+    # The org must not progress past code review to merge while the PR's CI is red. The pod's
+    # bounded CI fix loop can't make it pass (CI always fails) -> the workflow halts at CI_FAILED
+    # and never reaches the deploy gate or merges.
+    from temporalio import activity
+
+    from orchestrator.shared.types import CIResult
+
+    @activity.defn(name="await_ci")
+    async def ci_always_fail(project: str, branch: str, pr_url: str) -> CIResult:
+        return CIResult(status="failed", passed=False, failing_summary="E2E: contrast 1.06:1", url=pr_url)
+
+    async with await WorkflowEnvironment.start_local(dev_server_existing_path=TEMPORAL_CLI) as env:
+        async with await _start(env, activities_with({"await_ci": ci_always_fail})):
+            event = feature_event()
+            handle = await env.client.start_workflow(
+                FeatureRequestWorkflow.run, event, id=event.id, task_queue=TASK_QUEUE
+            )
+            await handle.signal(FeatureRequestWorkflow.submit_human_vote, args=[True, "tester"])
+            await wait_until(handle, lambda s: s.stage == "pm_signoff", GET_STATE)
+            await handle.signal(FeatureRequestWorkflow.submit_pm_signoff, "approve")
+            result = await handle.result()
+
+    assert result.status == Status.CI_FAILED
+    assert "engineering_pod" in result.stage_log
+    assert "ci_failed" in result.stage_log
+    assert "deploy" not in result.stage_log          # never merged a red PR
+    assert "deploy_approval" not in result.stage_log  # halted before the deploy gate
+
+
+@pytest.mark.asyncio
 async def test_human_veto_rejects_despite_agent_approval():
     # Governance: the human vote is decisive. Agents approve (stub), human says NO ->
     # the feature is rejected and short-circuits before implementation.

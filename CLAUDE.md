@@ -203,7 +203,13 @@ Ordered stages (the HTML diagram is the canonical version once it exists):
    the ordered stories → QA → **bounded code-review ↔ revise loop** (max
    `MAX_REVIEW_PASSES`): a reasoning-plane `code_reviewer` critiques the diff and the
    coding pod revises against it, so the PR is opened only after it's been reviewed →
-   `open_pr`)
+   `open_pr` → **bounded CI gate ↔ fix loop** (max `MAX_CI_FIX_PASSES`): `await_ci`
+   waits for the opened PR's real CI to conclude; while red, the failing checks are fed
+   back to the coding pod, the fix is force-pushed to the same PR (`update_pr`), and CI
+   re-runs. CI "unavailable" (mock/local target) is treated as passing so $0 dry-runs
+   skip it.)
+8a. **CI gate (hard):** if CI is still red after the fix loop, the workflow **halts at
+    `Status.CI_FAILED`** before the deploy gate — the org never merges past a red PR.
 9. **Deploy approval** (signal) → `deploy` (via Project Profile's deploy target) → `SHIPPED`
 
 ### BugWorkflow (shorter)
