@@ -35,7 +35,14 @@ so the agent process — not just the test command — is isolated from the host
 now runs a **bounded code-review ↔ revise loop before opening the PR** (2026-06-20): a reasoning-plane
 `code_reviewer` (Sonnet, `USE_AGENT_REVIEW`) critiques the diff and the coding pod revises against its
 required changes, capped by `MAX_REVIEW_PASSES` (=1, a hard cost lever since each revise is a full
-coding run) — so the human at the deploy gate only ever sees an already-reviewed PR. **91 tests green** (~14s).
+coding run) — so the human at the deploy gate only ever sees an already-reviewed PR. After opening the
+PR the pod runs a **bounded CI gate ↔ fix loop** (2026-06-21): `await_ci` waits for the PR's real CI to
+conclude (GitHub checks; "unavailable" → skip for mock/local targets), and while red it feeds the failing
+checks back to the coding pod and force-pushes the fix to the same PR (`update_pr`), capped by
+`MAX_CI_FIX_PASSES`. If CI is still red after the cap, the workflow **halts at `Status.CI_FAILED` before
+the deploy gate — the org never merges past a red PR**. (Motivated by a live run: a feedback-button
+feature merged with red CI because the pod's in-sandbox QA is stubbed for meal-planner; CI is now the
+real gate.) **97 tests green** (~16s).
 
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`

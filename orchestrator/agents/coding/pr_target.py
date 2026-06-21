@@ -33,6 +33,20 @@ class PRTarget(Protocol):
         body: str,
     ) -> PRResult: ...
 
+    def update(
+        self,
+        *,
+        repo_source: str,
+        base_branch: str,
+        branch: str,
+        diffs: list[str],
+    ) -> PRResult:
+        """Replace `branch`'s content with a new full diff and push it to the existing PR (the
+        CI fix loop, §10). The revise pass re-codes from a fresh base clone, so this rebuilds
+        the branch = base + new diff and force-updates it; the open PR picks up the new commit
+        and CI re-runs. No new PR is opened."""
+        ...
+
     def merge(
         self,
         *,
@@ -110,6 +124,20 @@ class LocalPRTarget:
             note="local dry-run PR (cloned, applied, committed; not pushed)",
         )
 
+    def update(self, *, repo_source, base_branch, branch, diffs) -> PRResult:
+        """Dry-run update — re-applies the new diff onto a fresh base clone (proving it still
+        applies) but does not force-push."""
+        try:
+            checkout, _ = _prepare_branch(repo_source, branch, diffs, "ci fix")
+        except RuntimeError as exc:
+            return PRResult(opened=False, branch=branch, note=str(exc))
+        return PRResult(
+            opened=True,
+            url=f"file://{checkout}#{branch}",
+            branch=branch,
+            note="local dry-run update (re-applied; not pushed)",
+        )
+
     def merge(self, *, repo_source, base_branch, branch) -> DeployResult:
         """Dry-run merge — proves the deploy step is reachable without touching the remote."""
         return DeployResult(
@@ -158,6 +186,23 @@ class GitHubPRTarget:
             )
         url = pr.stdout.strip().splitlines()[-1] if pr.stdout.strip() else ""
         return PRResult(opened=True, url=url, branch=branch, note="opened via gh")
+
+    def update(self, *, repo_source, base_branch, branch, diffs) -> PRResult:
+        """Rebuild `branch` = base + new diff and force-push it to the existing PR (the CI fix
+        loop). The open PR picks up the new head and CI re-runs. Force-push is safe here: the
+        branch is org-owned and single-commit (base + the pod's full diff)."""
+        try:
+            checkout, _ = _prepare_branch(repo_source, branch, diffs, "ci fix")
+        except RuntimeError as exc:
+            return PRResult(opened=False, branch=branch, note=str(exc))
+        push = _run(f"git push -f -u origin {_q(branch)}", cwd=checkout)
+        if push.returncode != 0:
+            return PRResult(
+                opened=False, branch=branch,
+                note=f"force-push failed: {push.stderr.strip() or push.stdout.strip()}",
+            )
+        url = _existing_pr_url(checkout, branch)
+        return PRResult(opened=True, url=url, branch=branch, note="updated existing PR (force-pushed CI fix)")
 
     def merge(self, *, repo_source, base_branch, branch) -> DeployResult:
         """`gh pr merge` the branch's PR — idempotent: an already-MERGED branch returns success

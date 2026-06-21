@@ -25,6 +25,7 @@ class Status(str, Enum):
     HELD = "held"                # human declined the deploy gate
     ESCALATED = "escalated"      # a human gate timed out
     OVER_BUDGET = "over_budget"  # budget ceiling hit and the override was declined/timed out
+    CI_FAILED = "ci_failed"      # the PR's CI was still red after the bounded fix loop; halted before merge
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +177,25 @@ class PodResult:
     pr_url: str = ""            # the PR the pod opened (or a local dry-run ref)
     review_approved: bool = True  # final code-review verdict (the reviewer<->developer loop ran BEFORE the PR opened)
     review_notes: str = ""      # the reviewer's final summary, surfaced to the human at the deploy gate
+    ci_passed: bool = True      # did the PR's CI go green (after the bounded CI fix loop)? gates the merge. True when CI is unavailable (mock/local runs) so $0 dry-runs aren't blocked.
+    ci_url: str = ""            # link to the CI run, surfaced to the human
+    ci_notes: str = ""          # CI verdict / failing-check summary
+    cost_tokens: int = 0
+    cost_usd: float = 0.0
+
+
+@dataclass
+class CIResult:
+    """Verdict from waiting on the opened PR's CI checks (CLAUDE.md §9, gate before merge).
+
+    `status` is "passed" | "failed" | "unavailable" (no real CI — e.g. a mock/local PR target,
+    so the gate is a no-op and the pod proceeds). `passed` is True for both "passed" and
+    "unavailable" so $0 dry-runs are never blocked; only a real "failed" blocks the merge."""
+
+    status: str
+    passed: bool
+    failing_summary: str = ""   # which checks failed + a short log excerpt, fed back to the developer
+    url: str = ""               # link to the CI run
     cost_tokens: int = 0
     cost_usd: float = 0.0
 

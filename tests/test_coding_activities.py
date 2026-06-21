@@ -297,6 +297,112 @@ async def test_pod_review_loop_revises_before_opening_pr():
     assert calls["pr_review_summary"] == "LGTM after revision"
 
 
+def test_no_ci_checker_is_unavailable_and_update_reapplies_locally(tmp_path):
+    """The default CI checker (no real CI) reports 'unavailable' (passed) so $0 runs never block,
+    and update_pr re-applies the diff via the LocalPRTarget without pushing."""
+    from orchestrator.activities.coding_backed import update_pr_with_target
+    from orchestrator.agents.coding.ci import NoCIChecker
+
+    verdict = NoCIChecker().await_conclusion(repo_source="x", branch="b", timeout_s=1, interval_s=1)
+    assert verdict.status == "unavailable" and verdict.passed is True
+
+    repo = _seeded_git_repo(tmp_path)
+    (tmp_path / "repo" / "mathlib.py").write_text(_MATHLIB.replace("return a - b", "return a + b"))
+    diff = _git("diff", repo).stdout
+    _git("checkout -- mathlib.py", repo)
+    pr = update_pr_with_target(
+        LocalPRTarget(), "fixture", "agentic/fix",
+        [StoryResult(story_id="S1", status="done", pr_ref="", diff=diff, summary="ci fix")],
+        _profile(git_remote=repo),
+    )
+    assert pr.opened and "return a + b" in open(os.path.join(pr.url[len("file://"):].split("#")[0], "mathlib.py")).read()
+
+
+async def _run_pod_with_ci(overrides, wf_id):
+    from temporalio.testing import WorkflowEnvironment
+    from temporalio.worker import Worker
+
+    from orchestrator.shared.config import TASK_QUEUE
+    from orchestrator.shared.types import StoryPlan
+    from orchestrator.workflows.engineering_pod import EngineeringPodWorkflow
+    from tests.helpers import TEMPORAL_CLI, activities_with
+
+    plan = StoryPlan(feature_id="feat-x", project="meal-planner",
+                     stories=[Story(id="S1", title="Add feedback button", estimate=2)])
+    async with await WorkflowEnvironment.start_local(dev_server_existing_path=TEMPORAL_CLI) as env:
+        async with Worker(env.client, task_queue=TASK_QUEUE,
+                          workflows=[EngineeringPodWorkflow], activities=activities_with(overrides)):
+            return await env.client.execute_workflow(
+                EngineeringPodWorkflow.run, plan, id=wf_id, task_queue=TASK_QUEUE
+            )
+
+
+@pytest.mark.asyncio
+async def test_pod_ci_gate_fixes_red_ci_then_proceeds():
+    """The CI gate (after open_pr): a PR whose CI fails once then passes must drive exactly one
+    developer CI-fix + PR update, and the pod proceeds with ci_passed=True from the revised diff."""
+    from temporalio import activity
+
+    from orchestrator.shared.types import CIResult, PRResult, StoryPlan
+
+    calls = {"ci": 0, "revise": 0, "update": 0}
+
+    @activity.defn(name="await_ci")
+    async def ci_fail_then_pass(project: str, branch: str, pr_url: str) -> CIResult:
+        calls["ci"] += 1
+        if calls["ci"] == 1:
+            return CIResult(status="failed", passed=False, failing_summary="E2E axe contrast 1.06:1", url=pr_url)
+        return CIResult(status="passed", passed=True, url=pr_url)
+
+    @activity.defn(name="revise_after_ci")
+    async def revise_ci(plan: StoryPlan, story_result: StoryResult, ci: CIResult) -> StoryResult:
+        calls["revise"] += 1
+        assert "contrast" in ci.failing_summary  # the failing checks reach the developer
+        return StoryResult(story_id=plan.feature_id, status="done", pr_ref="", diff="ci-fixed diff", summary="fixed CI")
+
+    @activity.defn(name="update_pr")
+    async def update(project: str, branch: str, story_results) -> PRResult:
+        calls["update"] += 1
+        return PRResult(opened=True, url=f"local://pr/{branch}", branch=branch)
+
+    pod = await _run_pod_with_ci(
+        {"await_ci": ci_fail_then_pass, "revise_after_ci": revise_ci, "update_pr": update},
+        "pod-ci-fix-test",
+    )
+    assert calls["revise"] == 1 and calls["update"] == 1  # exactly one bounded fix pass
+    assert calls["ci"] == 2                                # checked, fixed, re-checked
+    assert pod.ci_passed is True
+    assert pod.story_result.diff == "ci-fixed diff"        # PR carries the CI-fixed diff
+
+
+@pytest.mark.asyncio
+async def test_pod_ci_gate_gives_up_after_cap_with_ci_not_passed():
+    """If CI stays red past MAX_CI_FIX_PASSES, the pod returns ci_passed=False (the parent then
+    halts before merging) — it never reports green for a red PR."""
+    from temporalio import activity
+
+    from orchestrator.shared.types import CIResult, PRResult, StoryPlan
+
+    @activity.defn(name="await_ci")
+    async def ci_always_fail(project: str, branch: str, pr_url: str) -> CIResult:
+        return CIResult(status="failed", passed=False, failing_summary="still failing", url=pr_url)
+
+    @activity.defn(name="revise_after_ci")
+    async def revise_ci(plan: StoryPlan, story_result: StoryResult, ci: CIResult) -> StoryResult:
+        return StoryResult(story_id=plan.feature_id, status="done", pr_ref="", diff="attempted fix", summary="tried")
+
+    @activity.defn(name="update_pr")
+    async def update(project: str, branch: str, story_results) -> PRResult:
+        return PRResult(opened=True, url=f"local://pr/{branch}", branch=branch)
+
+    pod = await _run_pod_with_ci(
+        {"await_ci": ci_always_fail, "revise_after_ci": revise_ci, "update_pr": update},
+        "pod-ci-giveup-test",
+    )
+    assert pod.ci_passed is False
+    assert pod.ci_notes == "still failing"
+
+
 @pytest.mark.asyncio
 async def test_pod_runs_one_agent_for_the_whole_plan():
     """The pod is a single coding pass over the ordered plan (no per-story fan-out): one

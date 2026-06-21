@@ -153,7 +153,8 @@
 
         <div class="step"><div class="n">7 · ACTIVITY</div><div class="t">architect_plan_stories</div></div>
         <div class="arrow">▼</div>
-        <div class="step child"><div class="n">8 · CHILD</div><div class="t">EngineeringPod <span class="tag child">orchestrator-worker</span></div><div class="d">One Agent-SDK coding pass over the ordered stories → QA (bounded fix loop) → bounded code-review ↔ revise loop (reasoning-plane reviewer, MAX_REVIEW_PASSES) → open_pr. Sandboxed container per run (M4).</div></div>
+        <div class="step child"><div class="n">8 · CHILD</div><div class="t">EngineeringPod <span class="tag child">orchestrator-worker</span></div><div class="d">One Agent-SDK coding pass over the ordered stories → QA (bounded fix loop) → bounded code-review ↔ revise loop (reasoning-plane reviewer, MAX_REVIEW_PASSES) → open_pr → bounded CI gate ↔ fix loop (await_ci waits for the PR's real CI; failing checks fed back, fix force-pushed via update_pr, MAX_CI_FIX_PASSES). Sandboxed container per run (M4).</div></div>
+        <div class="step gate"><div class="n">8a · GATE</div><div class="t">CI must be green</div><div class="d">If the PR's CI is still red after the fix loop, halt at Status.CI_FAILED before the deploy gate — the org never merges past a red PR.</div></div>
         <div class="arrow">▼</div>
         <div class="step gate"><div class="n">9 · GATE</div><div class="t">deploy approval <span class="tag gate">human gate</span><span class="tag timer">7d</span></div><div class="d">decline → HELD · timeout → ESCALATED</div></div>
         <div class="arrow">▼</div>

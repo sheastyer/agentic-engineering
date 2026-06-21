@@ -18,7 +18,9 @@ from temporalio import workflow
 with workflow.unsafe.imports_passed_through():
     from orchestrator.activities import stubs as act
     from orchestrator.shared.config import (
+        CI_ACTIVITY_TIMEOUT_MINUTES,
         CODING_ACTIVITY_TIMEOUT_MINUTES,
+        MAX_CI_FIX_PASSES,
         MAX_QA_FIX_PASSES,
         MAX_REVIEW_PASSES,
     )
@@ -28,6 +30,9 @@ with workflow.unsafe.imports_passed_through():
 # Coding + PR-open activities run a real agent and the target's tests in a sandbox — give
 # them minutes, not the 30s reasoning default. Deterministic (a constant timedelta).
 _CODING_TIMEOUT = timedelta(minutes=CODING_ACTIVITY_TIMEOUT_MINUTES)
+# The await-CI activity polls the PR's checks until they conclude — minutes; its start-to-close
+# must exceed the internal poll timeout (CI_POLL_TIMEOUT_MINUTES). Deterministic constant.
+_CI_TIMEOUT = timedelta(minutes=CI_ACTIVITY_TIMEOUT_MINUTES)
 
 
 @workflow.defn
@@ -86,6 +91,24 @@ class EngineeringPodWorkflow:
         )
         _spend(pr)
 
+        # Bounded CI gate -> fix loop (§9.2, §10). Wait for the opened PR's real CI to conclude;
+        # while it's red, feed the failing checks back to the developer, push the fix to the SAME
+        # PR, and re-check. Capped by MAX_CI_FIX_PASSES (each pass is a full coding run + a CI
+        # wait). CI "unavailable" (mock/local target) reports passed=True, so $0 dry-runs skip
+        # this. If still red after the cap, ci.passed stays False and the parent halts before
+        # merging (Status.CI_FAILED) — the org never merges past a red PR.
+        ci = await run_activity(act.await_ci, plan.project, branch, pr.url, timeout=_CI_TIMEOUT)
+        _spend(ci)
+        ci_passes = 0
+        while not ci.passed and ci_passes < MAX_CI_FIX_PASSES:
+            ci_passes += 1
+            result = await run_activity(
+                act.revise_after_ci, plan, result, ci, timeout=_CODING_TIMEOUT
+            )
+            upd = await run_activity(act.update_pr, plan.project, branch, [result], timeout=_CODING_TIMEOUT)
+            ci = await run_activity(act.await_ci, plan.project, branch, pr.url, timeout=_CI_TIMEOUT)
+            _spend(result, upd, ci)
+
         return PodResult(
             story_result=result,
             qa=qa,
@@ -93,6 +116,9 @@ class EngineeringPodWorkflow:
             pr_url=pr.url,
             review_approved=review.approved,
             review_notes=review.notes,
+            ci_passed=ci.passed,
+            ci_url=ci.url,
+            ci_notes=ci.failing_summary or ci.status,
             cost_tokens=cost,
             cost_usd=cost_usd,
         )

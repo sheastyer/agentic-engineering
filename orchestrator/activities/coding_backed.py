@@ -21,6 +21,7 @@ import os
 from temporalio import activity
 
 from orchestrator.agents.coding.agent import CodingAgent
+from orchestrator.agents.coding.ci import CIChecker, build_ci_checker
 from orchestrator.agents.coding.factory import build_coding_agent, build_sandbox
 from orchestrator.agents.coding.pod import implement_and_verify
 from orchestrator.agents.coding.pr_target import PRTarget, build_pr_target
@@ -28,8 +29,14 @@ from orchestrator.agents.coding.sandbox import Sandbox
 from orchestrator.agents.coding.types import CodingTask
 from orchestrator.projects.loader import load_profile
 from orchestrator.projects.profile import DeployKind, ProjectProfile
-from orchestrator.shared.config import CODING_MAX_BUDGET_USD, CODING_MAX_TURNS
+from orchestrator.shared.config import (
+    CI_POLL_INTERVAL_SECONDS,
+    CI_POLL_TIMEOUT_MINUTES,
+    CODING_MAX_BUDGET_USD,
+    CODING_MAX_TURNS,
+)
 from orchestrator.shared.types import (
+    CIResult,
     DeployResult,
     FeedbackEvent,
     PRResult,
@@ -198,6 +205,96 @@ async def revise_after_review_agent(
         )
     except Exception as exc:  # noqa: BLE001 — deliberate: convert to a failed result, don't retry
         return _failed_story(plan.feature_id, exc)
+
+
+def _ci_fix_instruction(plan: StoryPlan, ci: CIResult) -> str:
+    """Re-issue the whole-feature instruction with the PR's failing CI checks appended, so the
+    developer re-implements (fresh clone) with the concrete failures to fix. Mirrors
+    `_revise_instruction` but for CI rather than human review."""
+    return (
+        f"{_plan_instruction(plan)}\n\n"
+        "The pull request for this feature has FAILING CI checks. Re-implement the feature so "
+        "that all of these pass, while still delivering every story above:\n"
+        f"{ci.failing_summary or '(CI failed; address the failing checks)'}"
+    )
+
+
+async def revise_after_ci_with_pod(
+    agent: CodingAgent,
+    plan: StoryPlan,
+    ci: CIResult,
+    profile: ProjectProfile,
+    *,
+    sandbox: Sandbox | None = None,
+) -> StoryResult:
+    """Developer half of the CI fix loop: re-run the pod with the failing CI checks folded into
+    the instruction. One coding attempt in a fresh workspace (a full subscription draw — hence
+    MAX_CI_FIX_PASSES is small). Pure (agent + sandbox injected) for $0 testing."""
+    return await _run_coding(agent, _ci_fix_instruction(plan, ci), plan.feature_id, profile, sandbox)
+
+
+@activity.defn(name="revise_after_ci")
+async def revise_after_ci_agent(plan: StoryPlan, story_result: StoryResult, ci: CIResult) -> StoryResult:
+    """Live CI fix: re-run the coding pod against the failing checks. Registered under the
+    stub's name. `story_result` is the prior attempt (carried for the workflow's contract; the
+    pod re-codes from a fresh clone). Errors return a failed story, never raise (§10)."""
+    profile = load_profile(plan.project)
+    try:
+        return await revise_after_ci_with_pod(
+            build_coding_agent(), plan, ci, profile, sandbox=build_sandbox()
+        )
+    except Exception as exc:  # noqa: BLE001 — deliberate: convert to a failed result, don't retry
+        return _failed_story(plan.feature_id, exc)
+
+
+def await_ci_with_checker(
+    checker: CIChecker, project: str, branch: str, pr_url: str
+) -> CIResult:
+    """Wait for the opened PR's CI to conclude via the injected checker. Pure (checker injected)
+    so a NoCIChecker / fake makes this $0 and instant in tests."""
+    profile = load_profile(project)
+    result = checker.await_conclusion(
+        repo_source=profile.repo.git_remote,
+        branch=branch,
+        timeout_s=CI_POLL_TIMEOUT_MINUTES * 60,
+        interval_s=CI_POLL_INTERVAL_SECONDS,
+    )
+    if not result.url:
+        result.url = pr_url
+    return result
+
+
+@activity.defn(name="await_ci")
+async def await_ci_agent(project: str, branch: str, pr_url: str) -> CIResult:
+    """Live CI wait. Registered under the stub's name. The checker (real gh polling vs. a no-op
+    'unavailable') is chosen by CODING_PR_TARGET, so a mock/local run never blocks on CI."""
+    return await_ci_with_checker(build_ci_checker(), project, branch, pr_url)
+
+
+def update_pr_with_target(
+    target: PRTarget,
+    project: str,
+    branch: str,
+    story_results: list[StoryResult],
+    profile: ProjectProfile,
+) -> PRResult:
+    """Push a CI fix to the existing PR via the injected target. Pure (target injected) for $0
+    testing — a LocalPRTarget proves the diff re-applies without force-pushing."""
+    diffs = [r.diff for r in story_results if r.diff.strip()]
+    return target.update(
+        repo_source=profile.repo.git_remote,
+        base_branch=profile.repo.default_branch,
+        branch=branch,
+        diffs=diffs,
+    )
+
+
+@activity.defn(name="update_pr")
+async def update_pr_agent(project: str, branch: str, story_results: list[StoryResult]) -> PRResult:
+    """Live PR update: force-update the branch with the CI fix so the open PR re-runs CI.
+    Registered under the stub's name; target chosen by CODING_PR_TARGET."""
+    profile = load_profile(project)
+    return update_pr_with_target(build_pr_target(), project, branch, story_results, profile)
 
 
 async def fix_bug_with_pod(

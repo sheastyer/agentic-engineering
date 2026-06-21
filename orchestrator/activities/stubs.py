@@ -17,6 +17,7 @@ from orchestrator.shared.types import (
     ArchitectReview,
     Brief,
     BugPriority,
+    CIResult,
     DedupeResult,
     DeployResult,
     FeedbackEvent,
@@ -194,6 +195,35 @@ async def open_pr(
 
 
 @activity.defn
+async def await_ci(project: str, branch: str, pr_url: str) -> CIResult:
+    # Stub for the CI gate. The agent-backed twin waits on the real PR checks; the stub reports
+    # "unavailable" (no real CI for a $0 run) so the pod's CI loop is a no-op. Tests override it
+    # to drive the fail->fix->pass path.
+    return CIResult(status="unavailable", passed=True, failing_summary="", url=pr_url, cost_tokens=5)
+
+
+@activity.defn
+async def revise_after_ci(plan: StoryPlan, story_result: StoryResult, ci: CIResult) -> StoryResult:
+    # Stub for the developer's CI-fix pass — the agent-backed twin re-runs the coding pod with
+    # the failing-check summary appended. The stub echoes the prior result as "done".
+    return StoryResult(
+        story_id=story_result.story_id,
+        status="done",
+        pr_ref=story_result.pr_ref,
+        diff=story_result.diff,
+        summary=f"(stub) revised for CI: {ci.failing_summary or 'failing checks'}",
+        cost_tokens=800,
+    )
+
+
+@activity.defn
+async def update_pr(project: str, branch: str, story_results: list[StoryResult]) -> PRResult:
+    # Stub for pushing a CI fix to the existing PR. The agent-backed twin force-updates the
+    # branch so the open PR re-runs CI; the stub just reports success.
+    return PRResult(opened=True, url=f"local://pr/{branch}", branch=branch, note="(stub) updated", cost_tokens=10)
+
+
+@activity.defn
 async def deploy(project: str, branch: str) -> DeployResult:
     # Stub for the Project Profile's deploy target (PR/merge/container). Only ever
     # reached behind the human deploy-approval gate (CLAUDE.md §9.2).
@@ -252,6 +282,9 @@ ALL_ACTIVITIES = [
     review_diff,
     revise_after_review,
     open_pr,
+    await_ci,
+    revise_after_ci,
+    update_pr,
     deploy,
     triage_feedback,
     dedupe_check,

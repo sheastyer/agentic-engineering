@@ -181,6 +181,16 @@ class FeatureRequestWorkflow:
         self._cost_usd += pod.cost_usd
         await self._check_budget()
 
+        # 8a. CI gate: the org must not progress past code review to merge while the PR's CI is
+        # red. The pod already ran a bounded CI fix loop; if CI is still failing, halt before the
+        # deploy gate (a human must intervene) — never auto-merge a red PR (§9.2).
+        if not pod.ci_passed:
+            self._status = Status.CI_FAILED
+            self._enter("ci_failed")
+            return self._result(
+                event, f"CI failed on the PR ({pod.pr_url}); halted before deploy. {pod.ci_notes}"
+            )
+
         # 9. Deploy approval gate -> deploy -> SHIPPED
         self._enter("deploy_approval")
         try:
