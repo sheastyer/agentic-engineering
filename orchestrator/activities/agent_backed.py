@@ -11,6 +11,9 @@ activity name) is the M3 step, done once live auth is available. Until then the 
 remains the default so M1/M2 stay green and token-free.
 """
 
+import logging
+import re
+
 from temporalio import activity
 
 from orchestrator.agents.provider import ModelProvider
@@ -48,9 +51,75 @@ from orchestrator.shared.types import (
     Vote,
 )
 
-# A diff can be large; cap what we feed the reviewer so review-prompt tokens stay bounded
-# (§10). The head of a unified diff carries the substance — file headers + the edits.
-_MAX_REVIEW_DIFF_CHARS = 14000
+_log = logging.getLogger(__name__)
+
+# Cap what we feed the reviewer so review-prompt tokens stay bounded (§10). Generous on
+# purpose: Sonnet is 1M-context and review tokens are trivial next to the coding pod, so this
+# only trips on genuinely huge diffs. When it does trip we truncate PER FILE (never silently
+# drop the tail of the diff — that made the reviewer hallucinate whole files as "missing") and
+# the reviewer always gets the full changed-file list regardless.
+_MAX_REVIEW_DIFF_CHARS = 60000
+
+
+def _split_diff_by_file(diff: str) -> tuple[str, list[tuple[str, str]]]:
+    """Split a unified diff into (preamble, [(path, section), ...]) on `diff --git` markers.
+    `path` is the post-image (b/) path; `section` is that file's full hunk text."""
+    sections: list[tuple[str, str]] = []
+    preamble: list[str] = []
+    cur_path: str | None = None
+    cur: list[str] = []
+
+    def _flush() -> None:
+        if cur_path is not None:
+            sections.append((cur_path, "".join(cur)))
+
+    for line in diff.splitlines(keepends=True):
+        if line.startswith("diff --git "):
+            _flush()
+            m = re.match(r"diff --git a/(.*?) b/(.*?)\s*$", line)
+            cur_path = m.group(2) if m else "(unknown path)"
+            cur = [line]
+        elif cur_path is None:
+            preamble.append(line)
+        else:
+            cur.append(line)
+    _flush()
+    return "".join(preamble), sections
+
+
+def _render_diff_for_review(diff: str) -> tuple[str, list[str], list[str]]:
+    """Render the diff for the reviewer within the char budget, truncating per file.
+
+    Returns (rendered_diff, changed_files, truncated_files). `changed_files` is ALWAYS the
+    complete list (so the reviewer can never mistake a present-but-unshown file for a missing
+    one); `truncated_files` names every file whose hunks were cut or omitted to fit the budget.
+    """
+    diff = diff.strip()
+    if not diff:
+        return "(the developer produced no diff)", [], []
+    preamble, sections = _split_diff_by_file(diff)
+    changed = [p for p, _ in sections]
+    if not sections:  # unparseable / no per-file structure — flat truncation, still flagged
+        if len(diff) > _MAX_REVIEW_DIFF_CHARS:
+            return diff[:_MAX_REVIEW_DIFF_CHARS] + "\n…(diff truncated)…", changed, ["(entire diff)"]
+        return diff, changed, []
+
+    out: list[str] = [preamble] if preamble.strip() else []
+    used = len(preamble) if preamble.strip() else 0
+    truncated: list[str] = []
+    for path, section in sections:
+        remaining = _MAX_REVIEW_DIFF_CHARS - used
+        if len(section) <= remaining:
+            out.append(section)
+            used += len(section)
+        elif remaining > 400:  # room for a meaningful partial — include the head, mark truncated
+            out.append(section[:remaining] + f"\n…(hunks for {path} truncated to fit review budget)…\n")
+            used += remaining
+            truncated.append(path)
+        else:  # budget exhausted — keep the file visible by name, omit its hunks
+            out.append(f"diff --git a/{path} b/{path}\n…(hunks for {path} omitted — review budget exhausted)…\n")
+            truncated.append(path)
+    return "".join(out), changed, truncated
 
 
 def _tier_for(default_tier: str, complexity: str) -> str:
@@ -344,12 +413,28 @@ def review_diff_with_runner(
     persona = get_persona("code_reviewer")
     profile = load_profile(plan.project)
     stories = "\n".join(f"{i}. {s.title}" for i, s in enumerate(plan.stories, 1))
-    diff = story_result.diff.strip() or "(the developer produced no diff)"
-    if len(diff) > _MAX_REVIEW_DIFF_CHARS:
-        diff = diff[:_MAX_REVIEW_DIFF_CHARS] + "\n…(diff truncated for review)…"
+
+    diff, changed_files, truncated_files = _render_diff_for_review(story_result.diff)
+    files_list = "\n".join(f"- {p}" for p in changed_files) or "- (no files changed)"
+    truncation_note = ""
+    if truncated_files:
+        # Traceability: name the elided files in the worker log AND tell the reviewer they are
+        # present (not missing) — the truncation false-negative that shipped before this fix.
+        _log.warning(
+            "code-review diff exceeded %d chars for feature %s; hunks truncated/omitted for: %s "
+            "(the reviewer still receives the full changed-file list and a not-missing note)",
+            _MAX_REVIEW_DIFF_CHARS, plan.feature_id, ", ".join(truncated_files),
+        )
+        truncation_note = (
+            "\n\nIMPORTANT: the diff was large, so the hunks for these files were truncated or "
+            "omitted below ONLY to fit the review budget — they ARE part of this change. Do NOT "
+            "report them as missing or undelivered:\n"
+            + "\n".join(f"- {p}" for p in truncated_files)
+        )
     task_input = (
         f"Planned stories this change must deliver:\n{stories}\n\n"
         f"Developer's note: {story_result.summary or '(none)'}\n\n"
+        f"All files changed by this diff (the complete set):\n{files_list}{truncation_note}\n\n"
         f"Unified diff under review:\n{diff}"
     )
 

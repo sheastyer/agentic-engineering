@@ -465,8 +465,11 @@ def test_review_diff_activity_adapts_contract_and_carries_required_changes():
         feature_id="feat-dark", project="meal-planner",
         stories=[Story(id="feat-dark-S1", title="Add dark-mode toggle", estimate=2)],
     )
-    result = StoryResult(story_id="feat-dark", status="done",
-                         pr_ref="", diff="--- a/x\n+++ b/x\n+toggle", summary="added toggle")
+    result = StoryResult(
+        story_id="feat-dark", status="done", pr_ref="", summary="added toggle",
+        diff="diff --git a/components/Toggle.tsx b/components/Toggle.tsx\n"
+             "--- a/components/Toggle.tsx\n+++ b/components/Toggle.tsx\n+const Toggle = () => null\n",
+    )
 
     review = review_diff_with_runner(provider, plan, result)
 
@@ -475,6 +478,59 @@ def test_review_diff_activity_adapts_contract_and_carries_required_changes():
     assert review.required_changes == ["toggle has no persisted state", "missing aria-label"]
     assert review.notes == "Solid start but the toggle does not persist."
     assert review.cost_usd == pytest.approx(0.0066)  # 1200×$3/1e6 + 200×$15/1e6
-    # The diff and the planned story both reach the reviewer as task input.
+    # The planned story, the diff hunk, AND the complete changed-file list all reach the reviewer.
     sent = provider.calls[0]["messages"][0]["content"]
-    assert "Add dark-mode toggle" in sent and "+toggle" in sent
+    assert "Add dark-mode toggle" in sent and "+const Toggle = () => null" in sent
+    assert "components/Toggle.tsx" in sent  # full file list so a present file can't read as missing
+
+
+def test_render_diff_for_review_truncates_per_file_and_reports_every_elided_file():
+    """The truncation fix (regression from the live run, 2026-06-21): a big leading file must
+    not push later files out of view silently — every changed file stays in the list, and any
+    file whose hunks were cut/omitted is reported so it can be logged for traceability."""
+    from orchestrator.activities.agent_backed import _MAX_REVIEW_DIFF_CHARS, _render_diff_for_review
+
+    big = "+" + "x" * (_MAX_REVIEW_DIFF_CHARS + 500) + "\n"
+    diff = (
+        "diff --git a/big.ts b/big.ts\n--- a/big.ts\n+++ b/big.ts\n" + big
+        + "diff --git a/db/schema.ts b/db/schema.ts\nnew file mode 100644\n"
+        "--- /dev/null\n+++ b/db/schema.ts\n+export const feedback = table()\n"
+    )
+
+    rendered, changed, truncated = _render_diff_for_review(diff)
+
+    assert changed == ["big.ts", "db/schema.ts"]   # complete set regardless of budget
+    assert "db/schema.ts" in truncated             # the elided file is reported (for the log)
+    assert "db/schema.ts" in rendered              # and still visible by name in the rendered diff
+    # A small diff is passed through untouched, nothing reported truncated.
+    r2, c2, t2 = _render_diff_for_review("diff --git a/x b/x\n--- a/x\n+++ b/x\n+a\n")
+    assert c2 == ["x"] and t2 == [] and "+a" in r2
+
+
+def test_review_diff_logs_truncated_files_and_tells_reviewer_theyre_present(caplog):
+    """Traceability: when the diff is truncated, the elided files are named in a WARNING log AND
+    the reviewer is explicitly told they're present (not missing) — what caused the false
+    'missing schema/migration' rejection before the fix."""
+    import logging
+
+    from orchestrator.activities.agent_backed import _MAX_REVIEW_DIFF_CHARS, review_diff_with_runner
+    from orchestrator.agents.registry.contracts import CodeReviewOutput
+    from orchestrator.shared.types import Story, StoryPlan, StoryResult
+
+    parsed = CodeReviewOutput(approved=True, required_changes=[], summary="ok")
+    provider = _FakeProvider(parsed, 1000, 100, model_id="claude-sonnet-4-6")
+    plan = StoryPlan(feature_id="feat-x", project="meal-planner",
+                     stories=[Story(id="S1", title="Add feedback table", estimate=3)])
+    big = "+" + "x" * (_MAX_REVIEW_DIFF_CHARS + 500) + "\n"
+    result = StoryResult(
+        story_id="feat-x", status="done", pr_ref="", summary="impl",
+        diff=("diff --git a/big.ts b/big.ts\n--- a/big.ts\n+++ b/big.ts\n" + big
+              + "diff --git a/db/schema.ts b/db/schema.ts\n--- a/db/schema.ts\n+++ b/db/schema.ts\n+feedback\n"),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="orchestrator.activities.agent_backed"):
+        review_diff_with_runner(provider, plan, result)
+
+    assert any("db/schema.ts" in r.getMessage() for r in caplog.records)  # named in the log
+    sent = provider.calls[0]["messages"][0]["content"]
+    assert "db/schema.ts" in sent and "Do NOT" in sent  # reviewer told it's present, not missing
