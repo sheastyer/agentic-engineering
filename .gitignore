@@ -6,6 +6,8 @@ __pycache__/
 .DS_Store
 .env
 .env.local
-.claude/
+# track skills (the run-org skill), but not local settings/worktrees
+.claude/*
+!.claude/skills/
 # persistent Temporal dev DB + trace artifacts SQLite (local only)
 .localdata/
