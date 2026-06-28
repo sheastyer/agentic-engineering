@@ -1,0 +1,119 @@
+# story feat-add-a-guardrail-to-the-chat-agen
+diff --git a/app/api/chat/[date]/message/route.ts b/app/api/chat/[date]/message/route.ts
+index 7afb3e5..4e961c0 100644
+--- a/app/api/chat/[date]/message/route.ts
++++ b/app/api/chat/[date]/message/route.ts
+@@ -11,6 +11,8 @@ import { buildHistoryContext } from '@/lib/meal-log'
+ import { searchRecipesTool } from '@/lib/tools/search-recipes'
+ import { toModelMessages, toStoredMessages } from '@/lib/messages'
+ import { extractReasoning, latestRecommendation } from '@/lib/transcript'
++import { classifyMessage } from '@/lib/guardrail'
++import { OFF_TOPIC_RESPONSE } from '@/lib/guardrail/constants'
+ import type { Member, StoredMessage } from '@/lib/types'
+ 
+ export const runtime = 'nodejs'
+@@ -39,6 +41,14 @@ export async function POST(
+   if (typeof body.content !== 'string' || !body.content.trim()) {
+     return NextResponse.json({ error: 'content required' }, { status: 400 })
+   }
++  // Guardrail: classify the user message before doing any heavy work. If the
++  // message is clearly off-topic (not about food / meal planning) we return a
++  // canned reply immediately — no DB reads, no LLM call.
++  const topic = await classifyMessage(body.content)
++  if (topic === 'OFF_TOPIC') {
++    return NextResponse.json({ message: OFF_TOPIC_RESPONSE, recommendation: null })
++  }
++
+   // Attendee selection from the client (who's eating tonight). Optional — when
+   // absent we fall back to whatever the thread already recorded, then everyone.
+   const requestedAttendeeIds = Array.isArray(body.attendeeIds)
+diff --git a/lib/guardrail/constants.ts b/lib/guardrail/constants.ts
+new file mode 100644
+index 0000000..afa2ae6
+--- /dev/null
++++ b/lib/guardrail/constants.ts
+@@ -0,0 +1,38 @@
++// ── Guardrail: topic classification constants ─────────────────────────────
++// These constants are shared between the classifier and any code that needs
++// to act on classification results (e.g. the chat route).
++
++// Topics that are in-scope for the meal-planning assistant.
++export const ALLOWED_TOPICS = [
++  'meal planning',
++  'dinner ideas',
++  'recipe recommendations',
++  'cooking techniques',
++  'ingredients',
++  'dietary restrictions',
++  'food allergies',
++  'food preferences',
++  'cuisine types',
++  'weekly meal planning',
++  'nutrition',
++  'grocery items',
++  'meal ratings and feedback',
++] as const
++
++// System prompt given to the classifier LLM. Instructs it to respond with
++// exactly one token: ON_TOPIC or OFF_TOPIC.
++export const CLASSIFICATION_PROMPT = `You are a topic classifier for a household meal-planning assistant.
++
++The assistant is only allowed to help with topics directly related to meal planning, such as:
++${ALLOWED_TOPICS.map((t) => `- ${t}`).join('\n')}
++
++Your job is to classify whether the user's message is relevant to these topics.
++
++Respond with exactly one of these two words — nothing else:
++- ON_TOPIC   (the message is about food, meals, recipes, cooking, or related subjects)
++- OFF_TOPIC  (the message is clearly unrelated to meal planning or food)`
++
++// Friendly reply shown to the user when their message is classified as off-topic.
++// Returned verbatim from the chat API without going through the main LLM.
++export const OFF_TOPIC_RESPONSE =
++  "I'm here to help with meal planning and dinner ideas! I can suggest recipes, work around dietary restrictions, or help you plan your week's dinners. What would you like to eat tonight?"
+diff --git a/lib/guardrail/index.ts b/lib/guardrail/index.ts
+new file mode 100644
+index 0000000..445f637
+--- /dev/null
++++ b/lib/guardrail/index.ts
+@@ -0,0 +1,40 @@
++import { generateText } from 'ai'
++import { model } from '@/lib/ai'
++import { CLASSIFICATION_PROMPT } from './constants'
++
++export type ClassificationResult = 'ON_TOPIC' | 'OFF_TOPIC'
++
++// Classify whether a user message is on-topic for the meal-planning assistant.
++//
++// Design:
++//  - Calls the LLM with a 500 ms hard timeout (AbortSignal.timeout).
++//  - Fail-open: any error or ambiguous response is treated as ON_TOPIC so that
++//    a classifier failure never silently blocks the user.
++//  - The classifier uses maxTokens: 5 to keep the call cheap and fast — we
++//    only need one token ("ON_TOPIC" or "OFF_TOPIC") but allow a small buffer.
++export async function classifyMessage(
++  userMessage: string,
++): Promise<ClassificationResult> {
++  try {
++    const { text } = await generateText({
++      model,
++      system: CLASSIFICATION_PROMPT,
++      messages: [{ role: 'user', content: userMessage }],
++      maxTokens: 5,
++      abortSignal: AbortSignal.timeout(500),
++    })
++
++    // The model should reply with exactly "ON_TOPIC" or "OFF_TOPIC".
++    // Normalise to uppercase and trim to handle any surrounding whitespace.
++    const label = text.trim().toUpperCase()
++    if (label.startsWith('OFF_TOPIC')) {
++      return 'OFF_TOPIC'
++    }
++    // Default fail-open: if the model said something unexpected, let it through.
++    return 'ON_TOPIC'
++  } catch (err) {
++    // Timeout (AbortError), network error, or any other failure → fail open.
++    console.warn('[guardrail] classifier error — failing open:', err)
++    return 'ON_TOPIC'
++  }
++}

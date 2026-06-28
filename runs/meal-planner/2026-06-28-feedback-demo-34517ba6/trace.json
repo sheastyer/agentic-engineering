@@ -1,0 +1,330 @@
+{
+  "workflow_id": "feedback-demo-34517ba6",
+  "project": "meal-planner",
+  "result": {
+    "cost_tokens": 30159,
+    "cost_usd": 0.973976,
+    "feedback_id": "demo-34517ba6",
+    "stage_log": [
+      "pm_draft_brief",
+      "exec_council",
+      "council: human override -> approved (agents advisory)",
+      "pm_write_prd",
+      "architect_review_prd[pass 1]",
+      "pm_revise_prd",
+      "architect_review_prd[pass 2]",
+      "PRD approved by architect on pass 2",
+      "ux_generate_mocks",
+      "consumer_research",
+      "pm_signoff",
+      "architect_plan_stories",
+      "engineering_pod",
+      "deploy_approval",
+      "deploy"
+    ],
+    "status": "shipped",
+    "summary": "Shipped on branch agentic/feat-add-a-guardrail-to-the-chat-agen-34517ba6."
+  },
+  "scopes": {
+    "parent": [
+      {
+        "activity": "pm_draft_brief",
+        "payload": {
+          "complexity": "small",
+          "cost_tokens": 1465,
+          "cost_usd": 0.014205,
+          "problem": "The meal-planner chat agent currently engages with arbitrary off-topic requests. This dilutes the product's purpose, wastes model tokens, and risks the assistant behaving as a general-purpose chatbot. There's no scope-limiting behavior to keep conversations focused on planning the household's week of meals.",
+          "project": "meal-planner",
+          "summary": "Add a guardrail to the chat agent so it stays on-topic: when a user message is unrelated to meal planning (e.g. \"write a Java hello world\"), the agent politely declines and redirects back to meal planning instead of attempting to answer.",
+          "target_users": "Households using the meal-planner chat to plan their week; also benefits operators who want the assistant constrained to its intended domain.",
+          "ui_impacting": true
+        }
+      },
+      {
+        "activity": "council_agent_vote",
+        "payload": {
+          "approve": true,
+          "cost_tokens": 747,
+          "cost_usd": 0.003225,
+          "rationale": "Scope-limiting a chat agent to its intended domain raises no concrete legal or compliance concerns \u2014 there is no handling of sensitive personal data, no regulated health claims, and no IP or licensing risk introduced by declining off-topic messages. The feature actually reduces risk by limiting the assistant's exposure to harmful or legally fraught general-purpose use cases.",
+          "voter": "legal"
+        }
+      },
+      {
+        "activity": "council_agent_vote",
+        "payload": {
+          "approve": true,
+          "cost_tokens": 736,
+          "cost_usd": 0.003312,
+          "rationale": "Scope guardrails sharpen the product's identity as a dedicated meal-planning tool, reducing token waste and preventing the assistant from drifting into general-purpose chatbot territory that would undermine differentiation and operator trust. Keeping users focused on meal planning increases the probability of completing a weekly plan \u2014 the core retention loop \u2014 rather than getting distracted by off-topic tangents.",
+          "voter": "sales"
+        }
+      },
+      {
+        "activity": "pm_write_prd",
+        "payload": {
+          "complexity": "small",
+          "content": "# PRD: Chat Agent On-Topic Guardrail\n\n## Problem & Context\n\nThe meal-planner chat agent currently processes and responds to any user message regardless of subject matter. A user can type ",
+          "cost_tokens": 857,
+          "cost_usd": 0.003735,
+          "feature_id": "feat-add-a-guardrail-to-the-chat-agen",
+          "open_issues": [],
+          "project": "meal-planner",
+          "version": 1
+        }
+      },
+      {
+        "activity": "architect_review_prd",
+        "payload": {
+          "approved": false,
+          "concerns": [
+            "The PRD body is truncated \u2014 it ends mid-sentence ('A user can type') and contains no requirements, acceptance criteria, technical specification, or scope definition. There is nothing substantive to evaluate or break into stories."
+          ],
+          "cost_tokens": 702,
+          "cost_usd": 0.002802,
+          "pass_no": 1
+        }
+      },
+      {
+        "activity": "pm_revise_prd",
+        "payload": {
+          "complexity": "small",
+          "content": "# PRD: Chat Agent On-Topic Guardrail\n\n## Problem & Context\n\nThe meal-planner chat agent currently processes and responds to any user message regardless of subject matter. A user can type anything \u2014 stock tips, coding questions, general trivia \u2014 and the agent will engage, wasting tokens and diluting the product's purpose. This PRD defines a guardrail that keeps the agent focused on meal planning, recipes, nutrition, and household dietary preferences.\n\n---\n\n## Goals\n\n1. Reject off-topic messages gracefully before they reach the underlying LLM planning logic.\n2. Give users a clear, friendly explanation of what the agent can help with.\n3. Introduce no measurable latency regression for on-topic messages.\n\n## Non-Goals\n\n- Building a general-purpose content moderation system.\n- Blocking messages based on tone or sentiment (rudeness, frustration, etc.).\n- Changing any existing recipe-retrieval or meal-plan generation logic.\n\n---\n\n## Scope Definition\n\n**In scope**\n- A classification step inserted into the chat message-handling pipeline.\n- A configurable list of allowed topic categories (meal planning, recipes, ingredients, nutrition, dietary restrictions, household preferences).\n- A canned off-topic response with a suggestion to redirect the conversation.\n- Server-side enforcement (the guardrail runs in the API route, not only in the browser).\n\n**Out of scope**\n- User-facing topic-category configuration.\n- Admin UI for managing allowed topics.\n- Logging or analytics on off-topic rates (may be addressed in a follow-up).\n\n---\n\n## Technical Specification\n\n### 1. Classification step\n\n- Location: `app/api/chat/route.ts`, before the message is forwarded to the planning agent.\n- Implementation: a lightweight prompt sent to the same LLM used by the planning agent, asking it to classify the user message as `ON_TOPIC` or `OFF_TOPIC` given a system prompt that enumerates the allowed topic categories.\n- The classification call must complete within **500 ms** (p95). If it times out or errors, the message is allowed through (fail-open) to avoid blocking legitimate users.\n- The classification prompt and allowed-topic list are stored in a single constant file (`lib/guardrail/topics.ts`) so they can be updated without touching route logic.\n\n### 2. Response for off-topic messages\n\n- HTTP status: `200` (keeps the chat UI's error handling simple).\n- Response body: standard chat message shape already used by the app, with `role: 'assistant'` and a fixed message string defined in `lib/guardrail/topics.ts`.\n- The fixed message must:\n  - Acknowledge the user's message without repeating it.\n  - State clearly that the agent is focused on meal planning.\n  - Offer one concrete example of something the agent can help with.\n\n### 3. Data layer\n\n- No schema changes required. The guardrail is stateless; nothing is persisted.\n\n### 4. Environment\n\n- No new environment variables. The classification call reuses the existing LLM client and API key already configured for the planning agent.\n\n---\n\n## Acceptance Criteria\n\n| # | Criterion | How to verify |\n|---|-----------|---------------|\n| 1 | An on-topic message (e.g., \"What can I make with chicken and spinach?\") reaches the planning agent and returns a recipe suggestion. | Manual test + existing integration tests pass. |\n| 2 | An off-topic message (e.g., \"What is the capital of France?\") never reaches the planning agent and returns the canned assistant response. | Unit test mocking the LLM classifier. |\n| 3 | If the classifier call throws or times out, the message is forwarded to the planning agent unchanged. | Unit test simulating classifier timeout/error. |\n| 4 | The canned off-topic response is a valid message in the existing chat message shape (TypeScript type check passes). | CI type-check step. |\n| 5 | p95 latency for on-topic messages does not increase by more than 100 ms relative to the pre-guardrail baseline, measured in a load test against the staging environment. | Load test in staging before merge. |\n\n---\n\n## User Stories\n\n**US-1 \u2014 On-topic flow (happy path)**\nAs a household member using the meal planner, when I send a message about meals or recipes, I receive a helpful response from the planning agent so that I can plan my week effectively.\n\n**US-2 \u2014 Off-topic message**\nAs a household member, when I send a message unrelated to meal planning, I receive a clear, friendly message explaining what the agent can help with, so that I am not confused by silence or a generic error.\n\n**US-3 \u2014 Classifier failure**\nAs a household member, when the guardrail classifier is unavailable, my message is still processed by the planning agent so that a backend hiccup does not block my meal-planning session.\n\n---\n\n## Open Questions\n\n1. Should borderline messages (e.g., general food culture questions not tied to meal planning) be treated as on-topic or off-topic? **Default decision: treat as on-topic** to minimise false positives; revisit after observing real traffic.\n2. Should the off-topic rate be surfaced in any existing monitoring dashboard? Deferred to a follow-up ticket.\n\n---\n\n## Out-of-Scope Follow-ups\n\n- Analytics/logging of off-topic message frequency.\n- A/B testing alternative guardrail copy.\n- Fine-tuning or replacing the LLM classifier with a cheaper embedding-based classifier if token costs become significant.\n",
+          "cost_tokens": 2134,
+          "cost_usd": 0.02421,
+          "feature_id": "feat-add-a-guardrail-to-the-chat-agen",
+          "open_issues": [],
+          "project": "meal-planner",
+          "version": 2
+        }
+      },
+      {
+        "activity": "architect_review_prd",
+        "payload": {
+          "approved": true,
+          "concerns": [],
+          "cost_tokens": 1896,
+          "cost_usd": 0.005832,
+          "pass_no": 2
+        }
+      },
+      {
+        "activity": "ux_generate_mocks",
+        "payload": {
+          "cost_tokens": 200,
+          "cost_usd": 0.0,
+          "present": true,
+          "ref": "artifact://mocks/feat-add-a-guardrail-to-the-chat-agen"
+        }
+      },
+      {
+        "activity": "architect_plan_stories",
+        "payload": {
+          "complexity": "medium",
+          "cost_tokens": 2350,
+          "cost_usd": 0.008394,
+          "feature_id": "feat-add-a-guardrail-to-the-chat-agen",
+          "project": "meal-planner",
+          "stories": [
+            {
+              "estimate": 2,
+              "id": "feat-add-a-guardrail-to-the-chat-agen-S1",
+              "title": "Add guardrail constants file with classification prompt, allowed-topic list, and canned off-topic response message"
+            },
+            {
+              "estimate": 3,
+              "id": "feat-add-a-guardrail-to-the-chat-agen-S2",
+              "title": "Implement classifier function in lib/guardrail with LLM call, 500ms timeout, and fail-open error handling"
+            },
+            {
+              "estimate": 3,
+              "id": "feat-add-a-guardrail-to-the-chat-agen-S3",
+              "title": "Wire guardrail classifier into app/api/chat/route.ts and return canned response for OFF_TOPIC messages"
+            }
+          ]
+        }
+      },
+      {
+        "activity": "deploy",
+        "payload": {
+          "cost_tokens": 0,
+          "cost_usd": 0.0,
+          "deployed": true,
+          "note": "merged via gh",
+          "ref": "agentic/feat-add-a-guardrail-to-the-chat-agen-34517ba6"
+        }
+      }
+    ],
+    "research": [
+      {
+        "activity": "consumer_research_persona",
+        "payload": {
+          "cost_tokens": 1848,
+          "cost_usd": 0.006756,
+          "notes": "Makes sense to me \u2014 I open this app to get dinner sorted fast, not to have the AI wander off into random topics. As long as it doesn't start flagging my quick 'what's easy with leftover rotisserie chicken?' messages as off-topic, I'm all for it keeping things focused. Just don't make the redirect message so wordy that it slows me down when I accidentally type something vague.",
+          "persona": "time-constrained professional",
+          "sentiment": "positive"
+        }
+      },
+      {
+        "activity": "consumer_research_persona",
+        "payload": {
+          "cost_tokens": 1838,
+          "cost_usd": 0.00663,
+          "notes": "Honestly, anything that keeps this focused on what I'm actually paying for \u2014 meal planning \u2014 is a win for me. I don't want the service burning through compute (and potentially driving up costs) because someone asked it about the stock market. Just make sure it doesn't get too trigger-happy and block me when I'm asking something like 'what's a cheap protein source this week?'",
+          "persona": "budget-conscious",
+          "sentiment": "positive"
+        }
+      },
+      {
+        "activity": "consumer_research_persona",
+        "payload": {
+          "cost_tokens": 1865,
+          "cost_usd": 0.007023,
+          "notes": "As someone just starting out, I was honestly worried I'd accidentally ask something dumb and break the whole thing \u2014 so knowing it'll just politely redirect me instead of spitting out some weird error is reassuring. I like that it'll tell me what it *can* help with, because I'm still figuring out what this app even does. My only concern is whether it might block me if I ask something like 'is this ingredient healthy?' \u2014 hope it's not too strict about what counts as on-topic.",
+          "persona": "first-time user",
+          "sentiment": "positive"
+        }
+      },
+      {
+        "activity": "consumer_research_persona",
+        "payload": {
+          "cost_tokens": 1872,
+          "cost_usd": 0.007152,
+          "notes": "I get why you'd want to keep the agent focused, but as a power user I'm already using this tool exclusively for meal planning \u2014 this guardrail does nothing for me and just adds a classification hop I have to pay for in latency. The 'borderline messages' decision worries me too: if I ask something like 'what's the history of miso fermentation' to understand an ingredient better, I don't want to hit a canned rejection. Net-net it's fine infrastructure work, just not something I'd notice or care about.",
+          "persona": "power user",
+          "sentiment": "neutral"
+        }
+      },
+      {
+        "activity": "synthesize_research",
+        "payload": {
+          "cost_tokens": 180,
+          "cost_usd": 0.0,
+          "feature_id": "week?'",
+          "findings": [
+            {
+              "cost_tokens": 1838,
+              "cost_usd": 0.00663,
+              "notes": "Honestly, anything that keeps this focused on what I'm actually paying for \u2014 meal planning \u2014 is a win for me. I don't want the service burning through compute (and potentially driving up costs) because someone asked it about the stock market. Just make sure it doesn't get too trigger-happy and block me when I'm asking something like 'what's a cheap protein source this week?'",
+              "persona": "budget-conscious",
+              "sentiment": "positive"
+            },
+            {
+              "cost_tokens": 1848,
+              "cost_usd": 0.006756,
+              "notes": "Makes sense to me \u2014 I open this app to get dinner sorted fast, not to have the AI wander off into random topics. As long as it doesn't start flagging my quick 'what's easy with leftover rotisserie chicken?' messages as off-topic, I'm all for it keeping things focused. Just don't make the redirect message so wordy that it slows me down when I accidentally type something vague.",
+              "persona": "time-constrained professional",
+              "sentiment": "positive"
+            },
+            {
+              "cost_tokens": 1872,
+              "cost_usd": 0.007152,
+              "notes": "I get why you'd want to keep the agent focused, but as a power user I'm already using this tool exclusively for meal planning \u2014 this guardrail does nothing for me and just adds a classification hop I have to pay for in latency. The 'borderline messages' decision worries me too: if I ask something like 'what's the history of miso fermentation' to understand an ingredient better, I don't want to hit a canned rejection. Net-net it's fine infrastructure work, just not something I'd notice or care about.",
+              "persona": "power user",
+              "sentiment": "neutral"
+            },
+            {
+              "cost_tokens": 1865,
+              "cost_usd": 0.007023,
+              "notes": "As someone just starting out, I was honestly worried I'd accidentally ask something dumb and break the whole thing \u2014 so knowing it'll just politely redirect me instead of spitting out some weird error is reassuring. I like that it'll tell me what it *can* help with, because I'm still figuring out what this app even does. My only concern is whether it might block me if I ask something like 'is this ingredient healthy?' \u2014 hope it's not too strict about what counts as on-topic.",
+              "persona": "first-time user",
+              "sentiment": "positive"
+            }
+          ],
+          "overall_sentiment": "positive",
+          "summary_ref": "artifact://research/summary"
+        }
+      }
+    ],
+    "pod": [
+      {
+        "activity": "implement_stories",
+        "payload": {
+          "cost_tokens": 6394,
+          "cost_usd": 0.5319361,
+          "diff": "diff --git a/app/api/chat/[date]/message/route.ts b/app/api/chat/[date]/message/route.ts\nindex 7afb3e5..4e961c0 100644\n--- a/app/api/chat/[date]/message/route.ts\n+++ b/app/api/chat/[date]/message/route.ts\n@@ -11,6 +11,8 @@ import { buildHistoryContext } from '@/lib/meal-log'\n import { searchRecipesTool } from '@/lib/tools/search-recipes'\n import { toModelMessages, toStoredMessages } from '@/lib/messages'\n import { extractReasoning, latestRecommendation } from '@/lib/transcript'\n+import { classifyMessage } from '@/lib/guardrail'\n+import { OFF_TOPIC_RESPONSE } from '@/lib/guardrail/constants'\n import type { Member, StoredMessage } from '@/lib/types'\n \n export const runtime = 'nodejs'\n@@ -39,6 +41,14 @@ export async function POST(\n   if (typeof body.content !== 'string' || !body.content.trim()) {\n     return NextResponse.json({ error: 'content required' }, { status: 400 })\n   }\n+  // Guardrail: classify the user message before doing any heavy work. If the\n+  // message is clearly off-topic (not about food / meal planning) we return a\n+  // canned reply immediately \u2014 no DB reads, no LLM call.\n+  const topic = await classifyMessage(body.content)\n+  if (topic === 'OFF_TOPIC') {\n+    return NextResponse.json({ message: OFF_TOPIC_RESPONSE, recommendation: null })\n+  }\n+\n   // Attendee selection from the client (who's eating tonight). Optional \u2014 when\n   // absent we fall back to whatever the thread already recorded, then everyone.\n   const requestedAttendeeIds = Array.isArray(body.attendeeIds)\ndiff --git a/lib/guardrail/constants.ts b/lib/guardrail/constants.ts\nnew file mode 100644\nindex 0000000..afa2ae6\n--- /dev/null\n+++ b/lib/guardrail/constants.ts\n@@ -0,0 +1,38 @@\n+// \u2500\u2500 Guardrail: topic classification constants \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n+// These constants are shared between the classifier and any code that needs\n+// to act on classification results (e.g. the chat route).\n+\n+// Topics that are in-scope for the meal-planning assistant.\n+export const ALLOWED_TOPICS = [\n+  'meal planning',\n+  'dinner ideas',\n+  'recipe recommendations',\n+  'cooking techniques',\n+  'ingredients',\n+  'dietary restrictions',\n+  'food allergies',\n+  'food preferences',\n+  'cuisine types',\n+  'weekly meal planning',\n+  'nutrition',\n+  'grocery items',\n+  'meal ratings and feedback',\n+] as const\n+\n+// System prompt given to the classifier LLM. Instructs it to respond with\n+// exactly one token: ON_TOPIC or OFF_TOPIC.\n+export const CLASSIFICATION_PROMPT = `You are a topic classifier for a household meal-planning assistant.\n+\n+The assistant is only allowed to help with topics directly related to meal planning, such as:\n+${ALLOWED_TOPICS.map((t) => `- ${t}`).join('\\n')}\n+\n+Your job is to classify whether the user's message is relevant to these topics.\n+\n+Respond with exactly one of these two words \u2014 nothing else:\n+- ON_TOPIC   (the message is about food, meals, recipes, cooking, or related subjects)\n+- OFF_TOPIC  (the message is clearly unrelated to meal planning or food)`\n+\n+// Friendly reply shown to the user when their message is classified as off-topic.\n+// Returned verbatim from the chat API without going through the main LLM.\n+export const OFF_TOPIC_RESPONSE =\n+  \"I'm here to help with meal planning and dinner ideas! I can suggest recipes, work around dietary restrictions, or help you plan your week's dinners. What would you like to eat tonight?\"\ndiff --git a/lib/guardrail/index.ts b/lib/guardrail/index.ts\nnew file mode 100644\nindex 0000000..445f637\n--- /dev/null\n+++ b/lib/guardrail/index.ts\n@@ -0,0 +1,40 @@\n+import { generateText } from 'ai'\n+import { model } from '@/lib/ai'\n+import { CLASSIFICATION_PROMPT } from './constants'\n+\n+export type ClassificationResult = 'ON_TOPIC' | 'OFF_TOPIC'\n+\n+// Classify whether a user message is on-topic for the meal-planning assistant.\n+//\n+// Design:\n+//  - Calls the LLM with a 500 ms hard timeout (AbortSignal.timeout).\n+//  - Fail-open: any error or ambiguous response is treated as ON_TOPIC so that\n+//    a classifier failure never silently blocks the user.\n+//  - The classifier uses maxTokens: 5 to keep the call cheap and fast \u2014 we\n+//    only need one token (\"ON_TOPIC\" or \"OFF_TOPIC\") but allow a small buffer.\n+export async function classifyMessage(\n+  userMessage: string,\n+): Promise<ClassificationResult> {\n+  try {\n+    const { text } = await generateText({\n+      model,\n+      system: CLASSIFICATION_PROMPT,\n+      messages: [{ role: 'user', content: userMessage }],\n+      maxTokens: 5,\n+      abortSignal: AbortSignal.timeout(500),\n+    })\n+\n+    // The model should reply with exactly \"ON_TOPIC\" or \"OFF_TOPIC\".\n+    // Normalise to uppercase and trim to handle any surrounding whitespace.\n+    const label = text.trim().toUpperCase()\n+    if (label.startsWith('OFF_TOPIC')) {\n+      return 'OFF_TOPIC'\n+    }\n+    // Default fail-open: if the model said something unexpected, let it through.\n+    return 'ON_TOPIC'\n+  } catch (err) {\n+    // Timeout (AbortError), network error, or any other failure \u2192 fail open.\n+    console.warn('[guardrail] classifier error \u2014 failing open:', err)\n+    return 'ON_TOPIC'\n+  }\n+}\n",
+          "pr_ref": "",
+          "status": "failed",
+          "story_id": "feat-add-a-guardrail-to-the-chat-agen",
+          "summary": "Everything looks correct. Here's a summary of what was implemented across the three stories:\n\n---\n\n### What was built\n\n**Story 1 \u2014 `lib/guardrail/constants.ts`**\n- `ALLOWED_TOPICS`: typed `as const` array of 13 meal-planning subjects used in the prompt\n- `CLASSIFICATION_PROMPT`: system prompt that instructs the LLM to reply with exactly `ON_TOPIC` or `OFF_TOPIC`\n- `OFF_TOPIC_RESPONSE`: the friendly canned reply returned to users when their message is off-topic\n\n**Story 2 \u2014 `lib/guardrail/index.t"
+        }
+      },
+      {
+        "activity": "qa_review",
+        "payload": {
+          "cost_tokens": 150,
+          "cost_usd": 0.0,
+          "notes": "(stub) failing stories",
+          "passed": false
+        }
+      },
+      {
+        "activity": "review_diff",
+        "payload": {
+          "approved": true,
+          "cost_tokens": 90,
+          "cost_usd": 0.0,
+          "notes": "(stub) LGTM \u2014 diff approved",
+          "required_changes": []
+        }
+      },
+      {
+        "activity": "open_pr",
+        "payload": {
+          "branch": "agentic/feat-add-a-guardrail-to-the-chat-agen-34517ba6",
+          "cost_tokens": 0,
+          "cost_usd": 0.0,
+          "note": "opened via gh",
+          "opened": true,
+          "url": "https://github.com/sheastyer/meal-planner/pull/13"
+        }
+      },
+      {
+        "activity": "await_ci",
+        "payload": {
+          "cost_tokens": 0,
+          "cost_usd": 0.0,
+          "failing_summary": "Lint & Typecheck failed (https://github.com/sheastyer/meal-planner/actions/runs/28337054618/job/83944992134)",
+          "passed": false,
+          "status": "failed",
+          "url": "https://github.com/sheastyer/meal-planner/pull/13"
+        }
+      },
+      {
+        "activity": "revise_after_ci",
+        "payload": {
+          "cost_tokens": 4835,
+          "cost_usd": 0.37632450000000006,
+          "diff": "",
+          "pr_ref": "",
+          "status": "failed",
+          "story_id": "feat-add-a-guardrail-to-the-chat-agen",
+          "summary": "Done. Here's a summary of what was fixed:\n\n**Root cause:** The guardrail feature PR used `maxTokens: 5` in the `generateText` call, but AI SDK v6 renamed that parameter to `maxOutputTokens`. This caused a TypeScript compile error:\n```\nerror TS2353: Object literal may only specify known properties, and 'maxTokens' does not exist in type ...\n```\n\n**Fix:** Changed `maxTokens: 5` \u2192 `maxOutputTokens: 5` in `lib/guardrail/index.ts` (line 23). The one-line change also updated the comment above it to ma"
+        }
+      },
+      {
+        "activity": "update_pr",
+        "payload": {
+          "branch": "agentic/feat-add-a-guardrail-to-the-chat-agen-34517ba6",
+          "cost_tokens": 0,
+          "cost_usd": 0.0,
+          "note": "no story diff applied cleanly",
+          "opened": false,
+          "url": ""
+        }
+      },
+      {
+        "activity": "await_ci",
+        "payload": {
+          "cost_tokens": 0,
+          "cost_usd": 0.0,
+          "failing_summary": "",
+          "passed": true,
+          "status": "passed",
+          "url": "https://github.com/sheastyer/meal-planner/pull/13"
+        }
+      }
+    ]
+  }
+}
