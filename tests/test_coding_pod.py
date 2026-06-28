@@ -67,6 +67,37 @@ def test_diff_excludes_transient_build_artifacts():
     assert "__pycache__" not in diff and ".pyc" not in diff, diff
 
 
+def test_diff_captures_changes_even_when_the_agent_commits():
+    # Regression (2026-06-28): the coding agent runs with broad permissions and may commit (or
+    # push) its own edits. diff() must reflect every change since the PINNED baseline whether the
+    # edits are left uncommitted, committed, or committed+pushed. Diffing against HEAD lost them
+    # the moment the agent committed (HEAD moved past the change) — an empty diff that surfaced
+    # as a false "failed" story / "no story diff applied cleanly" in the live CI-fix loop.
+    with Workspace(FIXTURE, test_command=TEST_COMMAND) as ws:
+        target = os.path.join(ws.path, "mathlib.py")
+        with open(target, encoding="utf-8") as fh:
+            src = fh.read()
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write(src.replace("return a - b", "return a + b"))
+        # the agent commits its own work, advancing HEAD past the baseline
+        ws._host.run(
+            'git add -A && git -c user.email=a@b.c -c user.name=agent commit -q -m fix',
+            cwd=ws.path,
+        )
+        diff = ws.diff()
+    assert "return a + b" in diff and diff.strip(), diff
+
+
+def test_coding_prompt_forbids_committing_and_pushing():
+    # The diff-capture contract assumes the agent leaves edits in the working tree; the prompt
+    # must say so (defense in depth alongside the baseline-ref diff above).
+    from orchestrator.agents.coding.agents.claude_sdk import _prompt
+
+    prompt = _prompt(CodingTask(instruction="do work", test_command="npm test", conventions=[]))
+    assert "UNCOMMITTED" in prompt
+    assert "git commit" in prompt and "git push" in prompt
+
+
 def test_coding_prompt_quarantines_untrusted_task_and_keeps_rules_outside():
     """Prompt-injection hygiene for the coding pod (M4 EVAL): feedback-derived instructions are
     untrusted, so malicious text must land INSIDE the <task> data block while the standing rules
