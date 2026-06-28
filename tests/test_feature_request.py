@@ -80,6 +80,49 @@ async def test_ci_failure_halts_before_deploy():
 
 
 @pytest.mark.asyncio
+async def test_pr_not_opened_skips_ci_gate_and_halts():
+    # Regression (2026-06-21): when open_pr fails (e.g. the diff didn't apply against the remote
+    # base), there is no PR to wait on or fix. The pod must NOT call await_ci (which would poll a
+    # non-existent PR until timeout) or revise_after_ci (a full, wasted coding run) — it must
+    # short-circuit to CI_FAILED so the parent halts before deploy.
+    from temporalio import activity
+
+    from orchestrator.shared.types import CIResult, PRResult, StoryResult
+
+    called: list[str] = []
+
+    @activity.defn(name="open_pr")
+    async def open_pr_fails(project, branch, story_results, review_summary=""):
+        return PRResult(opened=False, branch=branch, note="no story diff applied cleanly")
+
+    @activity.defn(name="await_ci")
+    async def await_ci_spy(project: str, branch: str, pr_url: str) -> CIResult:
+        called.append("await_ci")
+        return CIResult(status="passed", passed=True)
+
+    @activity.defn(name="revise_after_ci")
+    async def revise_spy(plan, result, ci) -> StoryResult:
+        called.append("revise_after_ci")
+        return result
+
+    overrides = {"open_pr": open_pr_fails, "await_ci": await_ci_spy, "revise_after_ci": revise_spy}
+    async with await WorkflowEnvironment.start_local(dev_server_existing_path=TEMPORAL_CLI) as env:
+        async with await _start(env, activities_with(overrides)):
+            event = feature_event()
+            handle = await env.client.start_workflow(
+                FeatureRequestWorkflow.run, event, id=event.id, task_queue=TASK_QUEUE
+            )
+            await handle.signal(FeatureRequestWorkflow.submit_human_vote, args=[True, "tester"])
+            await wait_until(handle, lambda s: s.stage == "pm_signoff", GET_STATE)
+            await handle.signal(FeatureRequestWorkflow.submit_pm_signoff, "approve")
+            result = await handle.result()
+
+    assert result.status == Status.CI_FAILED
+    assert called == []                       # CI gate fully skipped — no wasted wait or coding revise
+    assert "deploy" not in result.stage_log   # never merged
+
+
+@pytest.mark.asyncio
 async def test_human_veto_rejects_despite_agent_approval():
     # Governance: the human vote is decisive. Agents approve (stub), human says NO ->
     # the feature is rejected and short-circuits before implementation.

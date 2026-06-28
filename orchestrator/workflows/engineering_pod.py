@@ -24,7 +24,7 @@ with workflow.unsafe.imports_passed_through():
         MAX_QA_FIX_PASSES,
         MAX_REVIEW_PASSES,
     )
-    from orchestrator.shared.types import PodResult, StoryPlan
+    from orchestrator.shared.types import CIResult, PodResult, StoryPlan
     from orchestrator.workflows.common import run_activity
 
 # Coding + PR-open activities run a real agent and the target's tests in a sandbox — give
@@ -91,23 +91,34 @@ class EngineeringPodWorkflow:
         )
         _spend(pr)
 
-        # Bounded CI gate -> fix loop (§9.2, §10). Wait for the opened PR's real CI to conclude;
-        # while it's red, feed the failing checks back to the developer, push the fix to the SAME
-        # PR, and re-check. Capped by MAX_CI_FIX_PASSES (each pass is a full coding run + a CI
-        # wait). CI "unavailable" (mock/local target) reports passed=True, so $0 dry-runs skip
-        # this. If still red after the cap, ci.passed stays False and the parent halts before
-        # merging (Status.CI_FAILED) — the org never merges past a red PR.
-        ci = await run_activity(act.await_ci, plan.project, branch, pr.url, timeout=_CI_TIMEOUT)
-        _spend(ci)
-        ci_passes = 0
-        while not ci.passed and ci_passes < MAX_CI_FIX_PASSES:
-            ci_passes += 1
-            result = await run_activity(
-                act.revise_after_ci, plan, result, ci, timeout=_CODING_TIMEOUT
+        # If the PR never opened (e.g. the diff didn't apply against the remote base), there is
+        # nothing to wait on or fix: await_ci would poll a non-existent PR until it times out
+        # (CI_POLL_TIMEOUT_MINUTES) and the "fix" loop would burn a full coding revise per pass
+        # against a branch that still can't be pushed (a real ~$2.31 + 40min waste observed
+        # 2026-06-21). Short-circuit to a clear CI_FAILED so the parent halts before deploy.
+        if not pr.opened:
+            ci = CIResult(
+                status="no_pr", passed=False,
+                failing_summary=f"PR was not opened: {pr.note or 'open_pr reported opened=False'}",
             )
-            upd = await run_activity(act.update_pr, plan.project, branch, [result], timeout=_CODING_TIMEOUT)
+        else:
+            # Bounded CI gate -> fix loop (§9.2, §10). Wait for the opened PR's real CI to
+            # conclude; while it's red, feed the failing checks back to the developer, push the
+            # fix to the SAME PR, and re-check. Capped by MAX_CI_FIX_PASSES (each pass is a full
+            # coding run + a CI wait). CI "unavailable" (mock/local target) reports passed=True,
+            # so $0 dry-runs skip this. If still red after the cap, ci.passed stays False and the
+            # parent halts before merging (Status.CI_FAILED) — the org never merges past a red PR.
             ci = await run_activity(act.await_ci, plan.project, branch, pr.url, timeout=_CI_TIMEOUT)
-            _spend(result, upd, ci)
+            _spend(ci)
+            ci_passes = 0
+            while not ci.passed and ci_passes < MAX_CI_FIX_PASSES:
+                ci_passes += 1
+                result = await run_activity(
+                    act.revise_after_ci, plan, result, ci, timeout=_CODING_TIMEOUT
+                )
+                upd = await run_activity(act.update_pr, plan.project, branch, [result], timeout=_CODING_TIMEOUT)
+                ci = await run_activity(act.await_ci, plan.project, branch, pr.url, timeout=_CI_TIMEOUT)
+                _spend(result, upd, ci)
 
         return PodResult(
             story_result=result,

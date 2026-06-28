@@ -6,7 +6,7 @@ target injected). A MockCodingAgent + LocalPRTarget keep these token-free, auth-
 free of any external side effect (no push, no gh, no docker).
 
 The fixture is a real on-disk git repo (the agent path git-clones its source, the way it
-clones the meal-planner profile's local_path), seeded with the same broken `add` the
+clones the meal-planner profile's git_remote), seeded with the same broken `add` the
 execution-plane tests use, so a correct edit turns the target's own tests green.
 """
 
@@ -17,6 +17,7 @@ import sys
 import pytest
 
 from orchestrator.activities.coding_backed import (
+    _source_and_fromgit,
     implement_story_with_pod,
     open_pr_with_target,
 )
@@ -116,17 +117,28 @@ async def test_implement_story_done_when_fix_makes_tests_pass(tmp_path):
     repo = _seeded_git_repo(tmp_path)
     agent = MockCodingAgent(edits=[FIX])
     result = await implement_story_with_pod(
-        agent, Story(id="S1", title="Fix add()", estimate=1), _profile(local_path=repo)
+        agent, Story(id="S1", title="Fix add()", estimate=1), _profile(git_remote=repo)
     )
     assert result.status == "done", result.summary
     assert result.diff.strip() and "return a + b" in result.diff
+
+
+def test_pod_clones_from_git_remote_not_local_path():
+    """Regression (2026-06-21): the pod must clone the SAME base the PR target pushes against
+    (git_remote), even when the profile also has a local_path. Preferring local_path skewed the
+    base whenever the local checkout drifted from origin, so the diff failed to apply at PR time
+    ("no story diff applied cleanly") and no PR opened."""
+    profile = _profile(local_path="/some/stale/local/checkout", git_remote="git@example.com:org/repo.git")
+    source, from_git = _source_and_fromgit(profile)
+    assert source == "git@example.com:org/repo.git"
+    assert from_git is True
 
 
 async def test_implement_story_failed_when_noop_attempt_leaves_bug(tmp_path):
     repo = _seeded_git_repo(tmp_path)
     agent = MockCodingAgent(edits=[])  # changes nothing -> QA must catch it
     result = await implement_story_with_pod(
-        agent, Story(id="S1", title="Fix add()", estimate=1), _profile(local_path=repo)
+        agent, Story(id="S1", title="Fix add()", estimate=1), _profile(git_remote=repo)
     )
     assert result.status == "failed"
 
@@ -217,7 +229,7 @@ async def test_implement_plan_codes_whole_feature_in_one_pass(tmp_path):
     instr = _plan_instruction(plan)
     assert "Fix the add() helper" in instr and "Wire it into the UI" in instr
 
-    result = await implement_plan_with_pod(MockCodingAgent(edits=[FIX]), plan, _profile(local_path=repo))
+    result = await implement_plan_with_pod(MockCodingAgent(edits=[FIX]), plan, _profile(git_remote=repo))
     assert result.status == "done", result.summary
     assert result.story_id == "feat-x" and "return a + b" in result.diff
 

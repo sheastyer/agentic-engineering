@@ -16,8 +16,6 @@ Billing: `build_coding_agent()` defaults to the Claude **subscription** via the 
 `build_sandbox()` contains the untrusted test command (CODING_SANDBOX=container for real input).
 """
 
-import os
-
 from temporalio import activity
 
 from orchestrator.agents.coding.agent import CodingAgent
@@ -62,11 +60,18 @@ def _failed_story(story_id: str, exc: Exception) -> StoryResult:
 
 
 def _source_and_fromgit(profile: ProjectProfile) -> tuple[str, bool]:
-    """Where the pod clones the target from. Always a git clone (depth 1) so only tracked
-    files come along — no node_modules/.next bloat. Prefer a local checkout if the profile
-    has one (fast), else the git remote."""
-    if profile.repo.local_path:
-        return os.path.expanduser(profile.repo.local_path), True
+    """Where the pod clones the target from — ALWAYS `git_remote` (depth-1 clone, tracked
+    files only, no node_modules/.next bloat).
+
+    This MUST be the same source the PR target, CI checker, and deploy clone from (all of
+    them use `profile.repo.git_remote`). The pod generates its diff against this base; the
+    PR target then applies that diff onto a fresh clone of the *same* base. Cloning the pod
+    from `local_path` instead (the old behavior) silently skews the base whenever the local
+    checkout drifts from origin — e.g. after another PR merges to origin but the local working
+    copy hasn't pulled — so the diff no longer applies at PR time and `open_pr` fails with
+    "no story diff applied cleanly" (observed 2026-06-21). git_remote is the single base of
+    truth; this also matches the D4 decision recorded in profile.py. To point the pod at a
+    local repo (offline/dev/tests), set `git_remote` to a `file://` path."""
     return profile.repo.git_remote, True
 
 
