@@ -53,6 +53,7 @@ class Workspace:
         self.sandbox: Sandbox = sandbox or LocalSandbox()
         self.path: str | None = None        # the repo checkout, set on __enter__
         self._root: str | None = None        # the temp dir we own and remove
+        self._baseline_sha: str | None = None  # commit to diff against, captured on __enter__
 
     def __enter__(self) -> "Workspace":
         self._root = tempfile.mkdtemp(prefix="agentic-ws-")
@@ -63,6 +64,11 @@ class Workspace:
             shutil.copytree(self.source, dest)
         self.path = dest
         self._ensure_baseline()
+        # Pin the baseline commit NOW so diff() is independent of where HEAD ends up. The agent
+        # is told to leave edits uncommitted, but if it commits (or pushes) anyway, HEAD moves;
+        # diffing against this fixed ref still captures every change since baseline, so the diff
+        # we hand up is never silently empty (the false-"failed"/"no diff" bug, 2026-06-28).
+        self._baseline_sha = self._host.run("git rev-parse HEAD", cwd=self.path).output.strip()
         self._exclude_transient_artifacts()
         return self
 
@@ -97,9 +103,14 @@ class Workspace:
         return TestRun(passed=res.returncode == 0, returncode=res.returncode, output=res.output)
 
     def diff(self) -> str:
-        """Unified diff of all changes since the baseline (staged so new files show)."""
+        """Unified diff of all changes since the pinned baseline commit — staged (so new files
+        show) and resolved against the baseline ref rather than HEAD, so the diff is complete
+        whether the agent left edits uncommitted, committed them, or committed and pushed."""
         assert self.path is not None, "workspace not entered"
-        return self._host.run("git add -A && git diff --cached HEAD", cwd=self.path).output
+        assert self._baseline_sha is not None, "workspace not entered"
+        return self._host.run(
+            f"git add -A && git diff --cached {self._baseline_sha}", cwd=self.path
+        ).output
 
 
 def _q(path: str) -> str:

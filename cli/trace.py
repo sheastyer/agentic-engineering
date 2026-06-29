@@ -255,20 +255,38 @@ def _build_report(project: str, wf_id: str, sections: list[tuple[str, list]], re
         elif stories:
             A(f"  - {stories}")
 
-    # Pod
-    impls = _rows_named(pod, "implement_stories")
+    # Pod — render OBJECTIVE signals (status, captured-diff size, QA/CI conclusions) distinctly
+    # from the agent's free-text summary, which is a self-report, not a verdict. Diff size is
+    # shown because a 0-line captured diff is itself a signal (the bookkeeping bug it surfaced).
+    impls = _rows_named(pod, "implement_stories") + _rows_named(pod, "revise_after_ci")
     qa = _first(pod, "qa_review")
-    if impls or qa:
+    review = _first(pod, "review_diff")
+    ci_rows = _rows_named(pod, "await_ci")
+    pr_updates = _rows_named(pod, "update_pr")
+    if impls or qa or ci_rows:
         A("")
         A("## Engineering pod")
         A("")
         for s in impls:
+            diff = s.get("diff") if isinstance(s.get("diff"), str) else ""
             A(
-                f"- **{_g(s, 'story_id')}** — status={_g(s, 'status')}, "
-                f"cost=${_g(s, 'cost_usd', 0.0)}: {_g(s, 'summary')}"
+                f"- **coding attempt** `{_g(s, 'story_id')}` — status={_g(s, 'status')}, "
+                f"diff captured={len(diff.splitlines())} lines, cost=${_g(s, 'cost_usd', 0.0)}"
             )
+            if s.get("summary"):
+                A(f"  - agent self-report: {_short(s['summary'], 240)}")
         if qa:
-            A(f"- **QA:** passed={_g(qa, 'passed')} — {_g(qa, 'notes')}")
+            A(f"- **QA (sandbox tests):** passed={_g(qa, 'passed')} — {_g(qa, 'notes')}")
+        if review:
+            A(f"- **Code review:** approved={_g(review, 'approved')} — {_g(review, 'notes')}")
+        for i, ci in enumerate(ci_rows, 1):
+            fs = str(_g(ci, "failing_summary", "")).replace("\n", " ").strip()
+            A(
+                f"- **CI check {i}:** status={_g(ci, 'status')}, passed={_g(ci, 'passed')}"
+                + (f" — {fs}" if fs else "")
+            )
+        for u in pr_updates:
+            A(f"- **PR update:** opened={_g(u, 'opened')} — {_g(u, 'note')}")
 
     # Deploy
     deploy = _first(all_rows, "deploy")
