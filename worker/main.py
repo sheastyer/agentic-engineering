@@ -88,6 +88,14 @@ def build_activities() -> list:
             "USE_AGENT_REVIEW: real pre-PR code review (Sonnet, reasoning) via MODEL_PROVIDER=%s",
             provider,
         )
+    if os.environ.get("USE_AGENT_QA"):
+        from orchestrator.activities.agent_backed import qa_review_agent
+
+        activities = _replace_by_name(activities, "qa_review", qa_review_agent)
+        logging.info(
+            "USE_AGENT_QA: real functional QA (Sonnet, reasoning) via MODEL_PROVIDER=%s",
+            provider,
+        )
     if os.environ.get("USE_AGENT_CODING"):
         from orchestrator.activities.coding_backed import (
             await_ci_agent,
