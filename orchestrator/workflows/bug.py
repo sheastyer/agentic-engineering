@@ -103,7 +103,7 @@ class BugWorkflow:
         await self._act(act.pm_prioritize_bug, event, triage, stage="pm_prioritize")
         fix = await self._act(act.fix_bug, event, stage="fix", timeout=_CODING_TIMEOUT)
         await self._act(act.review_fix, fix, stage="review")
-        await self._act(act.qa_review, [fix], stage="qa")
+        await self._act(act.qa_review, event.project, [fix], stage="qa")
 
         # Deploy approval gate
         self._enter("deploy_approval")

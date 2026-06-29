@@ -150,7 +150,7 @@ async def implement_stories(plan: StoryPlan) -> StoryResult:
 
 
 @activity.defn
-async def qa_review(story_results: list[StoryResult]) -> QAResult:
+async def qa_review(project: str, story_results: list[StoryResult]) -> QAResult:
     all_done = all(r.status == "done" for r in story_results)
     return QAResult(
         passed=all_done,

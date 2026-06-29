@@ -158,6 +158,20 @@ class CodeReviewOutput(BaseModel):
     )
 
 
+class QAReviewOutput(BaseModel):
+    passed: bool = Field(
+        description="True only if the change is functionally sound and ready for a human to "
+        "review at the deploy gate: the diff substantiates the work the developer claims, has "
+        "no obvious functional gaps (a claimed user-facing behavior with no supporting code, an "
+        "empty or contradictory diff), and the objective build/test status is not failing. A "
+        "passing self-report over an empty or broken diff is NOT a pass."
+    )
+    notes: str = Field(
+        description="One to three sentences: the QA verdict for the human at the deploy gate — "
+        "what was verified, and if failed, the concrete functional gap (not vague unease)."
+    )
+
+
 class PRDRevisionOutput(BaseModel):
     content: str = Field(
         description="The full revised PRD body, edited to resolve every raised concern "

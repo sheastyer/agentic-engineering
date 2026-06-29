@@ -484,6 +484,33 @@ def test_review_diff_activity_adapts_contract_and_carries_required_changes():
     assert "components/Toggle.tsx" in sent  # full file list so a present file can't read as missing
 
 
+def test_qa_review_weighs_diff_and_status_not_just_the_developer_summary():
+    """The real QA agent must reach the provider the OBJECTIVE status and the actual diff (not
+    only the developer's self-report), and adapt the contract to a QAResult — so an optimistic
+    summary over an empty/failed diff can be judged a fail (the audit-accuracy fix, 2026-06-28)."""
+    from orchestrator.activities.agent_backed import qa_review_with_runner
+    from orchestrator.agents.registry.contracts import QAReviewOutput
+    from orchestrator.shared.types import QAResult, StoryResult
+
+    parsed = QAReviewOutput(passed=False, notes="Summary claims a toggle but the diff is empty.")
+    provider = _FakeProvider(parsed, 900, 80, model_id="claude-sonnet-4-6")  # sonnet $3/$15
+    result = StoryResult(
+        story_id="feat-dark", status="failed", pr_ref="", diff="",
+        summary="Everything looks correct — added the dark-mode toggle.",
+    )
+
+    qa = qa_review_with_runner(provider, "meal-planner", [result])
+
+    assert isinstance(qa, QAResult)
+    assert qa.passed is False
+    assert qa.notes == "Summary claims a toggle but the diff is empty."
+    assert qa.cost_usd == pytest.approx(0.0039)  # 900×$3/1e6 + 80×$15/1e6
+    # Both the objective status and the developer summary reach the QA persona.
+    sent = provider.calls[0]["messages"][0]["content"]
+    assert "status: failed" in sent and "Everything looks correct" in sent
+    assert provider.calls[0]["tier"] == "sonnet"
+
+
 def test_render_diff_for_review_truncates_per_file_and_reports_every_elided_file():
     """The truncation fix (regression from the live run, 2026-06-21): a big leading file must
     not push later files out of view silently — every changed file stays in the list, and any

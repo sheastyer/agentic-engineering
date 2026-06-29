@@ -27,6 +27,7 @@ from orchestrator.agents.registry.contracts import (
     CouncilVoteOutput,
     PRDAuthoringOutput,
     PRDRevisionOutput,
+    QAReviewOutput,
     ResearchFindingOutput,
     StoryPlanOutput,
     TriageOutput,
@@ -41,6 +42,7 @@ from orchestrator.shared.types import (
     BugPriority,
     FeedbackEvent,
     FeedbackKind,
+    QAResult,
     ResearchFinding,
     ResearchReport,
     ReviewResult,
@@ -454,3 +456,52 @@ async def review_diff_agent(plan: StoryPlan, story_result: StoryResult) -> Revie
     """Live code review of the pod's diff. Registered under the stub's name so the swap is a
     one-liner. Reasoning plane (MODEL_PROVIDER), not the coding subscription."""
     return review_diff_with_runner(build_provider(), plan, story_result)
+
+
+def qa_review_with_runner(
+    provider: ModelProvider, project: str, story_results: list[StoryResult]
+) -> QAResult:
+    """Real functional QA (Sonnet, reasoning plane) — the verdict recorded for the human at the
+    deploy gate. Unlike the stub (which just mirrored each story's status), this weighs the
+    developer's summary against the actual diff and the objective build/test status, so an
+    optimistic self-report over an empty/broken diff no longer reads as a pass. Single-shot
+    structured reasoning via the Agent Runner — cheap, exact cost, no subscription draw. Pure
+    (provider injected) for $0 unit testing."""
+    persona = get_persona("qa_reviewer")
+    profile = load_profile(project)
+
+    blocks = []
+    for i, r in enumerate(story_results, 1):
+        diff, changed_files, truncated_files = _render_diff_for_review(r.diff)
+        files_list = "\n".join(f"- {p}" for p in changed_files) or "- (no files changed)"
+        note = ""
+        if truncated_files:
+            note = (
+                "\n(NOTE: large diff — hunks for these files were truncated ONLY to fit the QA "
+                "budget; they ARE part of the change, do not treat them as missing: "
+                + ", ".join(truncated_files) + ")"
+            )
+        blocks.append(
+            f"=== Attempt {i}: {r.story_id} ===\n"
+            f"Objective build/test status: {r.status}\n"
+            f"Developer's summary: {r.summary or '(none)'}\n"
+            f"Files changed (complete set):\n{files_list}{note}\n"
+            f"Unified diff:\n{diff}"
+        )
+    task_input = "\n\n".join(blocks) or "(no coding attempts to QA)"
+
+    result = AgentRunner(provider).run(persona, profile, task_input)
+    out: QAReviewOutput = result.payload
+    return QAResult(
+        passed=out.passed,
+        notes=out.notes,
+        cost_tokens=result.input_tokens + result.output_tokens,
+        cost_usd=result.cost_usd,
+    )
+
+
+@activity.defn(name="qa_review")
+async def qa_review_agent(project: str, story_results: list[StoryResult]) -> QAResult:
+    """Live functional QA over the pod's attempt(s). Registered under the stub's name so the
+    swap is a one-liner. Reasoning plane (MODEL_PROVIDER), not the coding subscription."""
+    return qa_review_with_runner(build_provider(), project, story_results)

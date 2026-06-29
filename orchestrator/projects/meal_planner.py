@@ -45,6 +45,8 @@ PROFILE = ProjectProfile(
         "TypeScript + Next.js (App Router); Drizzle ORM over Postgres.",
         "Match existing code style; keep changes minimal and focused.",
         "All changes land via PR — never push to main directly.",
+        "AI SDK v6: use `maxOutputTokens` (not the v5 `maxTokens`) in generateText/streamText — "
+        "`maxTokens` is a TypeScript compile error that fails CI (observed 2026-06-28).",
     ],
     secret_refs={
         # logical name -> env var name (the value lives in the secret store, never here)

@@ -52,7 +52,7 @@ class EngineeringPodWorkflow:
 
         # One agent implements the whole ordered story plan in a single workspace.
         result = await run_activity(act.implement_stories, plan, timeout=_CODING_TIMEOUT)
-        qa = await run_activity(act.qa_review, [result])
+        qa = await run_activity(act.qa_review, plan.project, [result])
         _spend(result, qa)
 
         # Bounded QA -> fix loop: re-run the implementation once if QA failed (§10 cap).
@@ -60,7 +60,7 @@ class EngineeringPodWorkflow:
         while not qa.passed and fixes < MAX_QA_FIX_PASSES:
             fixes += 1
             result = await run_activity(act.implement_stories, plan, timeout=_CODING_TIMEOUT)
-            qa = await run_activity(act.qa_review, [result])
+            qa = await run_activity(act.qa_review, plan.project, [result])
             _spend(result, qa)
 
         # Bounded code-review -> revise loop, BEFORE the PR opens (§10 cap). A reasoning-plane
@@ -76,7 +76,7 @@ class EngineeringPodWorkflow:
             result = await run_activity(
                 act.revise_after_review, plan, result, review, timeout=_CODING_TIMEOUT
             )
-            qa = await run_activity(act.qa_review, [result])
+            qa = await run_activity(act.qa_review, plan.project, [result])
             review = await run_activity(act.review_diff, plan, result)
             _spend(result, qa, review)
 
