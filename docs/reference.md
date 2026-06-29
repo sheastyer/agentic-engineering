@@ -231,7 +231,7 @@ All of these are set in `.env` (copy `.env.example`).
 | `MODEL_PROVIDER` | always | `anthropic` (default) or `vercel` — picks the backend. |
 | `ANTHROPIC_API_KEY` | `anthropic` provider | Direct API key (pay-as-you-go). Unset = use the Claude subscription OAuth profile — which **does not** fund the Messages API, so a key/credit is needed in practice. |
 | `AI_GATEWAY_API_KEY` | `vercel` provider | Vercel AI Gateway key. (`VERCEL_OIDC_TOKEN` is an alternative.) |
-| `USE_AGENT_*` | optional | Swap a stubbed stage for its live agent — `_TRIAGE _BRIEF _COUNCIL _PRD_AUTHOR _ARCH_REVIEW _PRD_REVISE _RESEARCH _STORY_PLAN _BUG_PRIORITY`, plus `USE_AGENT_CODING` for the engineering pod. Unset = `$0` stubs. |
+| `USE_AGENT_*` | optional | Swap a stubbed stage for its live agent — `_TRIAGE _BRIEF _COUNCIL _PRD_AUTHOR _ARCH_REVIEW _PRD_REVISE _RESEARCH _STORY_PLAN _BUG_PRIORITY _REVIEW _QA`, plus `USE_AGENT_CODING` for the engineering pod. Unset = `$0` stubs. |
 | `CODING_AGENT` | with `USE_AGENT_CODING` | `mock` (default, `$0`) or `claude` — the Claude Agent SDK, which draws on the Claude **subscription** (no `ANTHROPIC_API_KEY`). |
 | `CODING_SANDBOX` | with `USE_AGENT_CODING` | `local` (default) or `container` — where the target's *test command* runs (Docker, for untrusted repo code). |
 | `CODING_PR_TARGET` | with `USE_AGENT_CODING` | `local` (default — clone/apply/commit a dry-run branch, **no push**) or `github` — push the branch + `gh pr create`. |
