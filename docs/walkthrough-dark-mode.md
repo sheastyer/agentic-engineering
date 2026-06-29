@@ -228,12 +228,14 @@ The reasoning above is not reconstructed — it's read straight from a database:
 
 - The dev server runs with a **persistent DB** (`temporal server start-dev --db-filename .localdata/temporal-dev.db`), so workflow history survives restarts.
 - `cli.trace <workflow-id> --save .localdata/artifacts.db` decodes every stage's activity result and writes it to a SQLite `trace_artifacts(workflow_id, scope, seq, activity, payload_json, saved_at)` table.
+- `cli.trace <workflow-id> --project <id> --audit runs` additionally writes a committed audit folder `runs/<project>/<date>-<workflow-id>/` (`report.md`, `prd.md`, `trace.json`, `coding.diff`) — the durable, reviewable record the `run-org` skill commits and opens an audit PR for. See [`runs/README.md`](../runs/README.md).
 
-Re-print or query any run:
+Re-print, audit, or query any run:
 
 ```bash
 ./.venv/bin/python -m cli.trace feedback-demo-8d930b55                       # pretty-print
 ./.venv/bin/python -m cli.trace feedback-demo-8d930b55 --save .localdata/artifacts.db
+./.venv/bin/python -m cli.trace feedback-demo-8d930b55 --project meal-planner --audit runs
 sqlite3 .localdata/artifacts.db \
   "select scope, activity from trace_artifacts where workflow_id='feedback-demo-8d930b55' order by scope, seq"
 ```

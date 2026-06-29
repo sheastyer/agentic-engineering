@@ -77,7 +77,9 @@ its own `USE_AGENT_*` env flag; set the flag and the worker swaps the stub for i
 | `USE_AGENT_RESEARCH` | real synthetic-user panel (Sonnet) |
 | `USE_AGENT_STORY_PLAN` | real story planning (Opus) |
 | `USE_AGENT_BUG_PRIORITY` | real bug prioritization (Haiku) |
-| `USE_AGENT_CODING` | real engineering pod — `implement_story`/`fix_bug`/`open_pr` via the Claude Agent SDK (`CODING_AGENT=claude`); see the coding env vars in [reference.md §6](./reference.md#6-model-providers--bring-your-own-backend) |
+| `USE_AGENT_REVIEW` | real pre-PR code review (Sonnet) — the `code_reviewer` in the pod's review↔revise loop |
+| `USE_AGENT_QA` | real functional QA (Sonnet) — the `qa_reviewer` weighs the diff + build/test status, not just the developer's summary |
+| `USE_AGENT_CODING` | real engineering pod — `implement_story`/`fix_bug`/`open_pr` plus the CI gate↔fix loop (`await_ci`/`revise_after_ci`/`update_pr`) and `deploy`, all via the Claude Agent SDK (`CODING_AGENT=claude`); see the coding env vars in [reference.md §6](./reference.md#6-model-providers--bring-your-own-backend) |
 
 Why bother with two implementations? It lets you **prove the entire control flow on free
 stubs**, then bring personas live **one at a time, each behind its own eval gate** — instead

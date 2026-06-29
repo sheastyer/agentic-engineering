@@ -232,7 +232,10 @@ temporal server start-dev --headless &      # the Temporal CLI: `brew install te
 The run walks that feedback through every stage and pauses at each human gate (council vote,
 PM sign-off, deploy approval); the demo driver approves them for you so you can watch the
 whole flow, then prints the final decision, the total cost, and a full **audit trail** of who
-decided what.
+decided what. `cli.trace <workflow-id> --project <id> --audit runs` persists that audit as a
+committed folder under [`runs/`](./runs) (`report.md`, `prd.md`, `trace.json`, `coding.diff`);
+the `run-org` skill opens an **audit PR** with it — the org's durable record of each run,
+separate from the product PR on the target.
 
 **Choosing a model provider.** Set it in `.env`. The quickest path is the **Vercel AI
 Gateway** — `MODEL_PROVIDER=vercel` with an `AI_GATEWAY_API_KEY`. The alternative is

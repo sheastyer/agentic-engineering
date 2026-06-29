@@ -44,6 +44,20 @@ the deploy gate — the org never merges past a red PR**. (Motivated by a live r
 feature merged with red CI because the pod's in-sandbox QA is stubbed for meal-planner; CI is now the
 real gate.) **97 tests green** (~16s).
 
+**Update (2026-06-28):** (a) **Per-run audit trail** — `cli.trace --project <id> --audit runs`
+writes a committed `runs/<project>/<date>-<workflow-id>/` folder (`report.md` with outcome,
+votes, PRD↔architect iterations, research, stories, pod, cost; `prd.md`; `trace.json`;
+`coding.diff`), and the `run-org` skill opens an **audit PR** with it — the org's durable
+record of each run, separate from the product PR. (b) **Coding diff capture fixed** — the
+pod diffs against a *pinned baseline ref* (not `HEAD`), so a diff is captured even if the
+agent commits/pushes; the agent is now told to leave edits uncommitted; the audit report
+renders objective signals (status, captured-diff size, each CI conclusion) distinctly from
+the agent's self-report. (c) **Real functional QA** (`USE_AGENT_QA` → `qa_reviewer`, Sonnet)
+weighs the diff + build/test status, not just the developer's summary; `qa_review` now takes
+`project`. (d) Pod clones from `git_remote` (the single base shared by PR/CI/deploy), and the
+meal-planner profile records the AI SDK v6 `maxOutputTokens` convention. Validated by a live
+guardrail run (meal-planner #13, ~$0.97). **102 tests green.**
+
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`
   & `EngineeringPod` children. All stages currently call **stub** activities
@@ -61,7 +75,8 @@ real gate.) **97 tests green** (~16s).
   workflow dataclass (workflow-owned ids/versions/loop-counters set in the activity, not the
   model). `worker.build_activities()` swaps each in via its own env flag (`USE_AGENT_BRIEF`,
   `_TRIAGE`, `_COUNCIL`, `_RESEARCH`, `_PRD_AUTHOR`, `_PRD_REVISE`, `_ARCH_REVIEW`,
-  `_STORY_PLAN`, `_BUG_PRIORITY`; see `_replace_by_name`). Off by default = $0 stubs.
+  `_STORY_PLAN`, `_BUG_PRIORITY`, `_REVIEW` (pre-PR code review), `_QA` (functional QA);
+  see `_replace_by_name`). Off by default = $0 stubs.
 - `evals/` — harness + a `cases.jsonl` per swapped persona; reports CON + deterministic
   assertions (incl. injection-resistance cases) + cost. **Operator assertions** for free-text
   fields (`contains`/`not_contains`/`contains_any`/`min_len`/`min_items`/`in`). **LLM-judge**
@@ -89,12 +104,17 @@ real gate.) **97 tests green** (~16s).
       -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u AI_AGENT -u CLAUDE_EFFORT -u ANTHROPIC_API_KEY \
     MODEL_PROVIDER=vercel USE_AGENT_BRIEF=1 USE_AGENT_COUNCIL=1 USE_AGENT_PRD_AUTHOR=1 \
       USE_AGENT_PRD_REVISE=1 USE_AGENT_ARCH_REVIEW=1 USE_AGENT_RESEARCH=1 USE_AGENT_STORY_PLAN=1 \
+      USE_AGENT_REVIEW=1 USE_AGENT_QA=1 \
       USE_AGENT_CODING=1 CODING_AGENT=claude CODING_SANDBOX=container CODING_PR_TARGET=github \
       CODING_PERMISSION_MODE=bypassPermissions ./.venv/bin/python -m worker.main &
-  # 3. drive it (auto-approves the human gates); then persist + read the reasoning trace
+  # 3. drive it (auto-approves the human gates); then persist + read + AUDIT the reasoning trace
   ./.venv/bin/python -u -m cli.run --title "Add a dark mode theme toggle to the app"
-  ./.venv/bin/python -m cli.trace <workflow-id> --save .localdata/artifacts.db
+  ./.venv/bin/python -m cli.trace <workflow-id> --project meal-planner --save .localdata/artifacts.db --audit runs
   ```
+  `--audit runs` writes a committed audit folder `runs/<project>/<date>-<workflow-id>/`
+  (`report.md`, `prd.md`, `trace.json`, `coding.diff`); the `run-org` skill commits it and
+  opens an **audit PR** on this repo — the org's own durable record of the run, separate from
+  the product PR on the target.
   Notes: `CODING_PR_TARGET=local` for a no-push dry run; the meal-planner target should be on
   `main` for a clean PR base; `bypassPermissions` needs the user's OK (autonomous host agent).
   A full chronological trace of this exact run is in [`docs/walkthrough-dark-mode.md`](./docs/walkthrough-dark-mode.md).
