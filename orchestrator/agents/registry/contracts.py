@@ -104,6 +104,17 @@ class PlannedStory(BaseModel):
         description="Relative effort in story points (1=trivial … 8=large). Split anything "
         "larger than 8 into multiple stories.",
     )
+    complexity: Literal["simple", "complex"] = Field(
+        default="simple",
+        description="How hard THIS story is to *implement in code*, which selects the coding "
+        "model (the model-selection phase). complex = genuinely hard or risky engineering — "
+        "intricate logic, tricky integration, schema/data migration, concurrency, or subtle "
+        "correctness/security stakes — that warrants the strongest model. simple = routine, "
+        "low-risk work (a UI control, a copy/style change, a straightforward CRUD slice) a "
+        "fast mid-tier model handles well. Most single-control UI stories are simple. Do NOT "
+        "inflate — simple stories run on a cheaper, faster model; only mark complex when the "
+        "engineering difficulty genuinely calls for it.",
+    )
 
 
 # Story-count ceiling per declared complexity — the scope signal that stops the architect

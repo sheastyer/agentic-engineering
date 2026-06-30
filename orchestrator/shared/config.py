@@ -49,7 +49,10 @@ BUDGET_USD = {"feature": 3.00, "bug": 0.50}
 # with a margin — treat these as the estimate).
 PRICING = {
     "haiku": {"model": "claude-haiku-4-5", "input": 1.00, "output": 5.00},
-    "sonnet": {"model": "claude-sonnet-4-6", "input": 3.00, "output": 15.00},
+    # Sonnet 5 (GA 2026-06-09) is the current Sonnet — supersedes the legacy claude-sonnet-4-6.
+    # Standard rate $3/$15; introductory $2/$10 runs through 2026-08-31. We keep the standard
+    # rate for cost estimates so the budget isn't under-counted once intro pricing ends.
+    "sonnet": {"model": "claude-sonnet-5", "input": 3.00, "output": 15.00},
     "opus": {"model": "claude-opus-4-8", "input": 5.00, "output": 25.00},
 }
 
@@ -58,9 +61,9 @@ PRICING = {
 # set MODEL_PROVIDER=anthropic|vercel. Same model tiers either way.
 DEFAULT_MODEL_PROVIDER = "anthropic"
 VERCEL_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
-VERCEL_MODELS = {  # tier -> gateway model id (gateway uses dot versioning, verified via /v1/models)
+VERCEL_MODELS = {  # tier -> gateway model id (gateway uses dot versioning for X.Y models)
     "haiku": "anthropic/claude-haiku-4.5",
-    "sonnet": "anthropic/claude-sonnet-4.6",
+    "sonnet": "anthropic/claude-sonnet-5",  # Sonnet 5 is a single-integer version (no dot)
     "opus": "anthropic/claude-opus-4.8",
 }
 

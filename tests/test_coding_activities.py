@@ -234,6 +234,58 @@ async def test_implement_plan_codes_whole_feature_in_one_pass(tmp_path):
     assert result.story_id == "feat-x" and "return a + b" in result.diff
 
 
+def test_plan_tier_is_the_hardest_story_in_the_plan():
+    """One agent codes the whole plan in one workspace (no per-story fan-out), so the run is
+    sized to its HARDEST story: any complex (opus) story escalates the whole run to opus;
+    an all-simple plan stays on sonnet; an empty/untiered plan defaults to sonnet."""
+    from orchestrator.activities.coding_backed import _plan_tier
+    from orchestrator.shared.types import StoryPlan
+
+    def plan(*tiers):
+        return StoryPlan(
+            feature_id="f", project="fixture",
+            stories=[Story(id=f"S{i}", title="t", estimate=1, tier=t) for i, t in enumerate(tiers)],
+        )
+
+    assert _plan_tier(plan("sonnet", "sonnet")) == "sonnet"
+    assert _plan_tier(plan("sonnet", "opus")) == "opus"
+    assert _plan_tier(plan("opus")) == "opus"
+    assert _plan_tier(StoryPlan(feature_id="f", project="fixture", stories=[])) == "sonnet"
+
+
+class _TierSpyAgent:
+    """Records the tier the pod handed the coding task — proves model selection reaches the SDK."""
+    name = "tier-spy"
+
+    def __init__(self) -> None:
+        self.seen_tier: str | None = None
+
+    async def implement(self, task, workspace):
+        from orchestrator.agents.coding.types import CodingOutcome
+        self.seen_tier = task.tier
+        return CodingOutcome(summary="(spy)", files_changed=[], diff="")
+
+
+async def test_pod_runs_on_selected_tier_and_records_it(tmp_path):
+    """A plan whose hardest story is complex (opus) runs the coding agent on opus, and the
+    chosen model is recorded on the StoryResult so the trace shows which model tackled it."""
+    from orchestrator.activities.coding_backed import implement_plan_with_pod
+    from orchestrator.shared.types import StoryPlan
+
+    repo = _seeded_git_repo(tmp_path)
+    plan = StoryPlan(
+        feature_id="feat-x", project="fixture",
+        stories=[
+            Story(id="S1", title="routine slice", estimate=1, tier="sonnet"),
+            Story(id="S2", title="hard slice", estimate=5, tier="opus"),
+        ],
+    )
+    agent = _TierSpyAgent()
+    result = await implement_plan_with_pod(agent, plan, _profile(git_remote=repo))
+    assert agent.seen_tier == "opus"   # sized to the hardest story
+    assert result.tier == "opus"       # recorded for the trace
+
+
 async def test_coding_error_becomes_failed_story_not_a_retry(monkeypatch):
     """Cost guard (§10): a coding error must return a *failed* StoryResult, never raise —
     otherwise Temporal retries the activity 4x, each retry burning a full coding run."""

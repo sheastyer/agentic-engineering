@@ -126,7 +126,7 @@ boundaries. It reflects the implemented workflows (the code is the source of tru
 Model tiers (IDs + per-1M-token pricing confirmed against Anthropic docs, 2026-06; exact
 strings, no date suffixes):
 - **Haiku** `claude-haiku-4-5` — $1 in / $5 out, 200K ctx. Triage, routing, notifications.
-- **Sonnet** `claude-sonnet-4-6` — $3 / $15, 1M ctx. Votes, revisions, synthetic users, most coding.
+- **Sonnet** `claude-sonnet-5` — $3 / $15 (intro $2/$10 through 2026-08-31), 1M ctx. Votes, revisions, synthetic users, simple-story coding.
 - **Opus** `claude-opus-4-8` — $5 / $25, 1M ctx. PRD authoring, architecture review, story planning.
 
 Cost notes that shape the budget design: the Opus→Haiku spread is only **5×** (tiering
@@ -279,8 +279,14 @@ These are non-negotiable. If a task seems to require breaking one, stop and ask.
   (a raise after the work is done silently wiped ~12 min of edits before this fix);
   `CODING_MAX_TURNS`/`CODING_MAX_BUDGET_USD` hard-cap that one agent — but high enough to
   *finish* ($0.25/8-turn produced nothing; ~$2.50/70-turn completed a real dark-mode feature at
-  ~$1.87). Coding runs on **Sonnet**, not Opus. Default the pod to **mock** ($0) unless coding
-  is the point.
+  ~$1.87). **Per-story model selection (the architect's job):** when it breaks the PRD into
+  stories, the architect also rates each story's *implementation* complexity (`simple`/`complex`),
+  which picks the coding model — `simple → Sonnet`, `complex → Opus` (a simple button must not
+  draw Opus). The single-agent invariant still holds (one agent codes the whole plan in one
+  workspace — NO per-story fan-out), so the run is sized to the plan's **hardest** story: an
+  all-simple plan runs on Sonnet, any complex story escalates the run to Opus. The selected
+  tier is recorded on the `StoryResult` and rendered in the trace/audit so you can see which
+  model tackled the work. Default the pod to **mock** ($0) unless coding is the point.
 - Multi-agent systems run roughly an order of magnitude more tokens than a single
   chat — keep fan-out widths and iteration counts capped.
 

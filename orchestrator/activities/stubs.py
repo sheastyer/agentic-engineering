@@ -127,9 +127,12 @@ async def synthesize_research(findings: list[ResearchFinding]) -> ResearchReport
 
 @activity.defn
 async def architect_plan_stories(prd: PRD, report: ResearchReport) -> StoryPlan:
+    # Tiers canned to show the model-selection phase even on $0 stub runs: the harder backend
+    # slice -> opus, the routine frontend slice -> sonnet. The agent-backed twin sets these
+    # from the architect's per-story complexity read.
     stories = [
-        Story(id=f"{prd.feature_id}-S1", title="(stub) backend slice", estimate=3),
-        Story(id=f"{prd.feature_id}-S2", title="(stub) frontend slice", estimate=2),
+        Story(id=f"{prd.feature_id}-S1", title="(stub) backend slice", estimate=3, tier="opus"),
+        Story(id=f"{prd.feature_id}-S2", title="(stub) frontend slice", estimate=2, tier="sonnet"),
     ]
     return StoryPlan(
         feature_id=prd.feature_id, stories=stories, project=prd.project, cost_tokens=350

@@ -124,6 +124,13 @@ def _render_diff_for_review(diff: str) -> tuple[str, list[str], list[str]]:
     return "".join(out), changed, truncated
 
 
+# Per-story model selection (the architect's "model-selection phase"): a story's
+# implementation complexity picks the coding tier the engineering pod builds it with — a
+# complex/hard story gets Opus, a routine one gets Sonnet (CLAUDE.md §5/§10: don't run a
+# simple button on Opus). Deterministic policy here, not a model picking a model id.
+_CODING_TIER_BY_STORY_COMPLEXITY = {"simple": "sonnet", "complex": "opus"}
+
+
 def _tier_for(default_tier: str, complexity: str) -> str:
     """Reasoning cost lever (§10): the Opus stages (PRD authoring, architect review, story
     planning) dominate a feature's reasoning tokens, but a small, well-scoped feature doesn't
@@ -360,7 +367,14 @@ def plan_stories_with_runner(provider: ModelProvider, prd: PRD, report: Research
     )
     out: StoryPlanOutput = result.payload
     stories = [
-        Story(id=f"{prd.feature_id}-S{i + 1}", title=s.title, estimate=s.estimate)
+        Story(
+            id=f"{prd.feature_id}-S{i + 1}",
+            title=s.title,
+            estimate=s.estimate,
+            # Model-selection phase: the architect's per-story complexity read picks the coding
+            # tier (complex -> opus, simple -> sonnet), carried to the pod and the trace.
+            tier=_CODING_TIER_BY_STORY_COMPLEXITY[s.complexity],
+        )
         for i, s in enumerate(out.stories)
     ]
     return StoryPlan(

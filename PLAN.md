@@ -564,7 +564,7 @@ move fast on later milestones.
 | ID | Decision | Needed by | Status |
 |---|---|---|---|
 | D1 | Human I/O channel (email / Slack / dashboard) | M5 | open |
-| D2 | Model IDs + pricing | M2 | ✅ `claude-haiku-4-5` $1/$5 · `claude-sonnet-4-6` $3/$15 · `claude-opus-4-8` $5/$25 (per 1M tok) |
+| D2 | Model IDs + pricing | M2 | ✅ `claude-haiku-4-5` $1/$5 · `claude-sonnet-5` $3/$15 (intro $2/$10 to 2026-08-31) · `claude-opus-4-8` $5/$25 (per 1M tok) |
 | D3 | Billing path | M2/M4 | ✅ **API credits / pay-as-you-go** (verified live 2026-06-14: Claude.ai subscription does NOT fund the Developer-Platform API — `400 credit balance too low`). Need Console API credits regardless of OAuth-vs-key; Vercel gateway is an alt with its own billing |
 | D4 | Repo handling — managed per-run workspace | M4 | ✅ yes (per-run workspace) |
 | D5 | Eval thresholds + judge approach (assertions vs LLM-judge) | M3 | ✅ **Assertions-first**: deterministic assertions + injection fixtures + cost bands for every persona; LLM-judge (+ human-labeled calibration set & judge/human agreement reporting) reserved for genuinely subjective personas only (PRD authoring, architecture review, story planning). **Bar:** per-persona threshold with documented rationale, proposed per swap and user-confirmed (no blanket 0.8). |
