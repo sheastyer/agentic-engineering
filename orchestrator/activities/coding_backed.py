@@ -75,12 +75,27 @@ def _source_and_fromgit(profile: ProjectProfile) -> tuple[str, bool]:
     return profile.repo.git_remote, True
 
 
-def _coding_task(instruction: str, profile: ProjectProfile) -> CodingTask:
+# Tier ordering for sizing a single coding run from a multi-story plan (see _plan_tier).
+_TIER_RANK = {"haiku": 0, "sonnet": 1, "opus": 2}
+
+
+def _plan_tier(plan: StoryPlan) -> str:
+    """The coding model for the whole-plan run = the HIGHEST tier the architect assigned to
+    any story in it. One agent implements the entire ordered plan in one workspace (the
+    load-bearing single-agent invariant, CLAUDE.md §10 — NO per-story fan-out), so we can't
+    run a different model per story within a run; instead we size the one run to its hardest
+    story. A plan of only simple stories runs on Sonnet; a plan containing any complex story
+    runs on Opus. Defaults to Sonnet when no story carries a tier (legacy/stub plans)."""
+    tiers = [s.tier for s in plan.stories if s.tier]
+    return max(tiers, key=lambda t: _TIER_RANK.get(t, 1), default="sonnet")
+
+
+def _coding_task(instruction: str, profile: ProjectProfile, tier: str = "sonnet") -> CodingTask:
     return CodingTask(
         instruction=instruction,
         test_command=profile.stack.test_command,
         conventions=profile.conventions,
-        tier="sonnet",
+        tier=tier,                             # model-selection phase: complex work -> opus, else sonnet
         max_turns=CODING_MAX_TURNS,            # cost cap (subscription) — see config
         max_budget_usd=CODING_MAX_BUDGET_USD,  # hard per-attempt spend ceiling
     )
@@ -106,10 +121,13 @@ async def _run_coding(
     story_id: str,
     profile: ProjectProfile,
     sandbox: Sandbox | None,
+    tier: str = "sonnet",
 ) -> StoryResult:
     """One coding attempt — one agent, one disposable workspace — adapted to a StoryResult.
-    Shared by the feature pod (whole plan), the single-story path, and the bug path."""
-    task = _coding_task(instruction, profile)
+    Shared by the feature pod (whole plan), the single-story path, and the bug path. `tier`
+    is the coding model the architect's model-selection picked; it's recorded on the result
+    so the trace shows which model tackled the work."""
+    task = _coding_task(instruction, profile, tier)
     source, from_git = _source_and_fromgit(profile)
     outcome, qa = await implement_and_verify(
         agent, task, source, from_git=from_git, sandbox=sandbox
@@ -120,6 +138,7 @@ async def _run_coding(
         pr_ref="",
         diff=outcome.diff,
         summary=outcome.summary,
+        tier=tier,
         cost_tokens=outcome.input_tokens + outcome.output_tokens,
         cost_usd=outcome.cost_usd,
     )
@@ -148,9 +167,12 @@ async def implement_plan_with_pod(
     *,
     sandbox: Sandbox | None = None,
 ) -> StoryResult:
-    """Implement the WHOLE story plan with a single agent in one workspace → one diff. Pure
-    (agent + sandbox injected) for $0 unit testing."""
-    return await _run_coding(agent, _plan_instruction(plan), plan.feature_id, profile, sandbox)
+    """Implement the WHOLE story plan with a single agent in one workspace → one diff, on the
+    model sized to the plan's hardest story (_plan_tier). Pure (agent + sandbox injected) for
+    $0 unit testing."""
+    return await _run_coding(
+        agent, _plan_instruction(plan), plan.feature_id, profile, sandbox, tier=_plan_tier(plan)
+    )
 
 
 async def revise_after_review_with_pod(
@@ -164,9 +186,10 @@ async def revise_after_review_with_pod(
     """The developer half of the reviewer↔developer loop: re-run the pod with the reviewer's
     required changes folded into the instruction. One coding attempt in a fresh workspace, just
     like the first pass — so it's another full subscription-window draw, which is why the loop
-    is hard-capped at MAX_REVIEW_PASSES (§10). Pure (agent + sandbox injected) for $0 testing."""
+    is hard-capped at MAX_REVIEW_PASSES (§10). Runs on the same model the plan was sized to
+    (_plan_tier). Pure (agent + sandbox injected) for $0 testing."""
     return await _run_coding(
-        agent, _revise_instruction(plan, review), plan.feature_id, profile, sandbox
+        agent, _revise_instruction(plan, review), plan.feature_id, profile, sandbox, tier=_plan_tier(plan)
     )
 
 
@@ -177,8 +200,9 @@ async def implement_story_with_pod(
     *,
     sandbox: Sandbox | None = None,
 ) -> StoryResult:
-    """One story in one workspace — the single-story path (used by tests / reusable)."""
-    return await _run_coding(agent, story.title, story.id, profile, sandbox)
+    """One story in one workspace — the single-story path (used by tests / reusable). Runs on
+    the story's own selected tier."""
+    return await _run_coding(agent, story.title, story.id, profile, sandbox, tier=story.tier or "sonnet")
 
 
 @activity.defn(name="implement_stories")
@@ -234,8 +258,11 @@ async def revise_after_ci_with_pod(
 ) -> StoryResult:
     """Developer half of the CI fix loop: re-run the pod with the failing CI checks folded into
     the instruction. One coding attempt in a fresh workspace (a full subscription draw — hence
-    MAX_CI_FIX_PASSES is small). Pure (agent + sandbox injected) for $0 testing."""
-    return await _run_coding(agent, _ci_fix_instruction(plan, ci), plan.feature_id, profile, sandbox)
+    MAX_CI_FIX_PASSES is small), on the plan's sized tier. Pure (agent + sandbox injected) for
+    $0 testing."""
+    return await _run_coding(
+        agent, _ci_fix_instruction(plan, ci), plan.feature_id, profile, sandbox, tier=_plan_tier(plan)
+    )
 
 
 @activity.defn(name="revise_after_ci")

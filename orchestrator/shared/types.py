@@ -135,6 +135,8 @@ class Story:
     id: str
     title: str
     estimate: int
+    tier: str = "sonnet"        # coding-model tier the architect selected for this story
+                                # (complex -> opus, simple -> sonnet); sizes the pod's model
 
 
 @dataclass
@@ -154,6 +156,8 @@ class StoryResult:
     pr_ref: str
     diff: str = ""              # unified diff the pod produced (assembled into the PR)
     summary: str = ""           # short note on what the coding attempt did
+    tier: str = ""              # coding-model tier that actually ran this attempt (traced so the
+                                # audit shows which model tackled the work); "" for stub/non-agent
     cost_tokens: int = 0
     cost_usd: float = 0.0
 

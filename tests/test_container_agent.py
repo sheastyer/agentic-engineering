@@ -66,7 +66,7 @@ async def test_runs_claude_in_a_mounted_container_and_captures_the_diff():
         assert args[-3:-1] == ["sh", "-lc"]
         inner = args[-1]
         assert "claude -p --output-format json" in inner
-        assert "claude-sonnet-4-6" in inner and "--max-turns 40" in inner
+        assert "claude-sonnet-5" in inner and "--max-turns 40" in inner
         assert "--permission-mode" in inner and "--allowedTools" in inner
 
     # The agent's edit (made in the mounted workspace) comes back as the diff + cost.

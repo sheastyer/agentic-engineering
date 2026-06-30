@@ -36,9 +36,16 @@ import time
 from temporalio.client import Client
 from temporalio.converter import default as _default_converter
 
-from orchestrator.shared.config import TEMPORAL_NAMESPACE, TEMPORAL_TARGET
+from orchestrator.shared.config import PRICING, TEMPORAL_NAMESPACE, TEMPORAL_TARGET
 
 _PC = _default_converter().payload_converter
+
+
+def _model_for_tier(tier) -> str:
+    """Human-readable model id for a coding tier — so the trace names which model ran, not
+    just the tier label. Unknown/empty tier falls back to the tier string itself."""
+    info = PRICING.get(tier) if isinstance(tier, str) else None
+    return info["model"] if info else (str(tier) if tier else "—")
 
 
 def _decode(payloads) -> list:
@@ -63,7 +70,7 @@ _VIEWS = {
     "consumer_research_persona": [("persona", 28), ("sentiment", 10), ("notes", 220)],
     "synthesize_research": [("overall_sentiment", 10), ("summary_ref", 60)],
     "architect_plan_stories": [("complexity", 8), ("stories", 400)],
-    "implement_stories": [("story_id", 28), ("status", 8), ("summary", 200), ("cost_usd", 10)],
+    "implement_stories": [("story_id", 28), ("status", 8), ("tier", 8), ("summary", 200), ("cost_usd", 10)],
     "qa_review": [("passed", 6), ("notes", 200)],
     "open_pr": [("opened", 6), ("url", 200), ("note", 120)],
     "deploy": [("deployed", 6), ("ref", 120)],
@@ -247,9 +254,12 @@ def _build_report(project: str, wf_id: str, sections: list[tuple[str, list]], re
         A(f"- **Complexity:** {_g(plan, 'complexity')}")
         stories = plan.get("stories")
         if isinstance(stories, list):
+            # Name the coding model the architect selected per story (the model-selection phase):
+            # complex stories -> Opus, simple -> Sonnet.
             for s in stories:
                 if isinstance(s, dict):
-                    A(f"  - {s.get('id', '')} {s.get('title', s)}")
+                    model = _model_for_tier(s.get("tier"))
+                    A(f"  - {s.get('id', '')} {s.get('title', s)} — model: {model}")
                 else:
                     A(f"  - {s}")
         elif stories:
@@ -271,6 +281,7 @@ def _build_report(project: str, wf_id: str, sections: list[tuple[str, list]], re
             diff = s.get("diff") if isinstance(s.get("diff"), str) else ""
             A(
                 f"- **coding attempt** `{_g(s, 'story_id')}` — status={_g(s, 'status')}, "
+                f"model={_model_for_tier(s.get('tier'))}, "
                 f"diff captured={len(diff.splitlines())} lines, cost=${_g(s, 'cost_usd', 0.0)}"
             )
             if s.get("summary"):

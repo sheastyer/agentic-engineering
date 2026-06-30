@@ -96,7 +96,7 @@ def test_prd_authoring_uses_sonnet_for_small_features():
         return Brief(summary="Add a toggle", problem="p", target_users="u",
                      ui_impacting=True, complexity=complexity, project="meal-planner")
 
-    small_provider = _FakeProvider(out, 1000, 400, model_id="claude-sonnet-4-6")
+    small_provider = _FakeProvider(out, 1000, 400, model_id="claude-sonnet-5")
     prd = author_prd_with_runner(small_provider, _brief("small"))
     assert small_provider.calls[0]["tier"] == "sonnet"
     assert prd.complexity == "small"              # carried for the architect stages
@@ -311,7 +311,7 @@ def test_council_vote_activity_adapts_contract_and_selects_lens():
     from orchestrator.shared.types import Brief, Vote
 
     parsed = CouncilVoteOutput(approve=False, rationale="handles sensitive data without consent")
-    provider = _FakeProvider(parsed, 2000, 100, model_id="claude-sonnet-4-6")  # sonnet $3/$15
+    provider = _FakeProvider(parsed, 2000, 100, model_id="claude-sonnet-5")  # sonnet $3/$15
     brief = Brief(summary="s", problem="p", target_users="u", ui_impacting=True,
                   project="meal-planner")
 
@@ -333,7 +333,7 @@ def test_research_finding_activity_adapts_contract_and_embodies_demographic():
     from orchestrator.shared.types import PRD, ResearchFinding
 
     parsed = ResearchFindingOutput(sentiment="positive", notes="saves me 30 min/week")
-    provider = _FakeProvider(parsed, 1500, 80, model_id="claude-sonnet-4-6")  # sonnet
+    provider = _FakeProvider(parsed, 1500, 80, model_id="claude-sonnet-5")  # sonnet
     prd = PRD(feature_id="feat-x", version=1, content="auto-plan button", project="meal-planner")
 
     result = research_finding_with_runner(provider, "time-constrained professional", prd)
@@ -384,7 +384,7 @@ def test_revise_prd_activity_bumps_version_and_preserves_identity():
         open_issues=[],
         changelog="addressed the abuse concern with rate limiting",
     )
-    provider = _FakeProvider(parsed, 3000, 400, model_id="claude-sonnet-4-6")  # sonnet
+    provider = _FakeProvider(parsed, 3000, 400, model_id="claude-sonnet-5")  # sonnet
     prd = PRD(feature_id="feat-x", version=1, content="PRD v1", project="meal-planner")
     review = ArchitectReview(approved=False, pass_no=1, concerns=["no abuse protection"])
 
@@ -449,6 +449,34 @@ def test_plan_stories_activity_mints_ids_and_adapts_stories():
     assert provider.calls[0]["tier"] == "opus"
 
 
+def test_plan_stories_selects_coding_model_per_story_complexity():
+    """The model-selection phase: the architect's per-story complexity read picks the coding
+    tier carried to the pod — a complex story -> opus, a simple one -> sonnet."""
+    from orchestrator.activities.agent_backed import plan_stories_with_runner
+    from orchestrator.agents.registry.contracts import PlannedStory, StoryPlanOutput
+    from orchestrator.shared.types import PRD, ResearchReport
+
+    parsed = StoryPlanOutput(complexity="large", stories=[
+        PlannedStory(title="schema migration + concurrency", estimate=5, complexity="complex"),
+        PlannedStory(title="add a settings toggle", estimate=1, complexity="simple"),
+    ])
+    provider = _FakeProvider(parsed, 2000, 600, model_id="claude-opus-4-8")
+    prd = PRD(feature_id="feat-x", version=1, content="PRD", project="meal-planner")
+    report = ResearchReport(feature_id="feat-x", findings=[], overall_sentiment="positive",
+                            summary_ref="artifact://r")
+
+    plan = plan_stories_with_runner(provider, prd, report)
+
+    assert [s.tier for s in plan.stories] == ["opus", "sonnet"]
+
+
+def test_planned_story_defaults_to_simple_when_unclassified():
+    """Back-compat: a story the model leaves unclassified defaults to simple (the cheaper tier)."""
+    from orchestrator.agents.registry.contracts import PlannedStory
+
+    assert PlannedStory(title="x", estimate=1).complexity == "simple"
+
+
 # --- runner-backed code reviewer (pre-PR review loop, reasoning plane) ----------
 def test_review_diff_activity_adapts_contract_and_carries_required_changes():
     from orchestrator.activities.agent_backed import review_diff_with_runner
@@ -460,7 +488,7 @@ def test_review_diff_activity_adapts_contract_and_carries_required_changes():
         required_changes=["toggle has no persisted state", "missing aria-label"],
         summary="Solid start but the toggle does not persist.",
     )
-    provider = _FakeProvider(parsed, 1200, 200, model_id="claude-sonnet-4-6")  # sonnet $3/$15
+    provider = _FakeProvider(parsed, 1200, 200, model_id="claude-sonnet-5")  # sonnet $3/$15
     plan = StoryPlan(
         feature_id="feat-dark", project="meal-planner",
         stories=[Story(id="feat-dark-S1", title="Add dark-mode toggle", estimate=2)],
@@ -493,7 +521,7 @@ def test_qa_review_weighs_diff_and_status_not_just_the_developer_summary():
     from orchestrator.shared.types import QAResult, StoryResult
 
     parsed = QAReviewOutput(passed=False, notes="Summary claims a toggle but the diff is empty.")
-    provider = _FakeProvider(parsed, 900, 80, model_id="claude-sonnet-4-6")  # sonnet $3/$15
+    provider = _FakeProvider(parsed, 900, 80, model_id="claude-sonnet-5")  # sonnet $3/$15
     result = StoryResult(
         story_id="feat-dark", status="failed", pr_ref="", diff="",
         summary="Everything looks correct — added the dark-mode toggle.",
@@ -545,7 +573,7 @@ def test_review_diff_logs_truncated_files_and_tells_reviewer_theyre_present(capl
     from orchestrator.shared.types import Story, StoryPlan, StoryResult
 
     parsed = CodeReviewOutput(approved=True, required_changes=[], summary="ok")
-    provider = _FakeProvider(parsed, 1000, 100, model_id="claude-sonnet-4-6")
+    provider = _FakeProvider(parsed, 1000, 100, model_id="claude-sonnet-5")
     plan = StoryPlan(feature_id="feat-x", project="meal-planner",
                      stories=[Story(id="S1", title="Add feedback table", estimate=3)])
     big = "+" + "x" * (_MAX_REVIEW_DIFF_CHARS + 500) + "\n"
