@@ -34,6 +34,7 @@ from orchestrator.agents.registry.contracts import (
 )
 from orchestrator.agents.runner import AgentRunner
 from orchestrator.projects.loader import load_profile
+from orchestrator.shared.errors import NonRetryableAgentError
 from orchestrator.shared.ids import feature_id
 from orchestrator.shared.types import (
     PRD,
@@ -454,7 +455,30 @@ def review_diff_with_runner(
         f"Unified diff under review:\n{diff}"
     )
 
-    result = AgentRunner(provider).run(persona, profile, task_input)
+    try:
+        result = AgentRunner(provider).run(persona, profile, task_input)
+    except NonRetryableAgentError as e:
+        # The reviewer is an ADVISORY pre-PR quality gate; CI is the HARD gate (§8a, §9.2). If the
+        # reasoning model can't return a schema-valid review (observed with Sonnet on the Vercel
+        # gateway 2026-06-30, where a reviewer crash killed the whole feature workflow AFTER the
+        # ~$1.28 coding pass), degrade to a non-blocking pass instead of raising — the same
+        # "return a result, never raise after the work is done" rule the coding pod already honors
+        # (§10). We deliberately do NOT degrade to approved=False: a *systematic* parse failure
+        # would then fail every re-review and burn a full coding revise per MAX_REVIEW_PASSES — a
+        # cost leak. Proceed to open_pr and let CI catch a genuine build break. (Cost of the failed
+        # re-ask attempts isn't recoverable from the exception, so it's a minor undercount here.)
+        _log.warning(
+            "code review unavailable for feature %s (%s); proceeding without a blocking review — "
+            "CI remains the hard gate", plan.feature_id, e,
+        )
+        return ReviewResult(
+            approved=True,
+            notes="Automated code review was unavailable (reviewer produced no schema-valid "
+            "output after bounded re-asks); proceeding without a blocking review — CI is the gate.",
+            required_changes=[],
+            cost_tokens=0,
+            cost_usd=0.0,
+        )
     out: CodeReviewOutput = result.payload
     return ReviewResult(
         approved=out.approved,

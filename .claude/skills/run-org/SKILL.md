@@ -49,12 +49,19 @@ Other modes the user may ask for:
 Source env in the **same** command that uses it — shell state does not persist between Bash
 calls. The repo venv is `./.venv`; Python 3.14.
 
-1. **Temporal dev server** — start only if `:7233` is down. Persistent DB so history survives:
+1. **Temporal dev server** — start only if `:7233` is down. Use an **absolute** `--db-filename`
+   so every startup persists to the SAME sqlite file and *all* prior runs stay visible in
+   `temporal workflow list` / the trace tools. A relative path (or omitting the flag) silently
+   forks history: started from another CWD it writes a different file, and with no flag the dev
+   server is in-memory and every prior run vanishes on restart.
    ```bash
-   nc -z localhost 7233 2>/dev/null || \
-     ~/.temporalio/bin/temporal server start-dev --db-filename .localdata/temporal-dev.db
+   nc -z localhost 7233 2>/dev/null || { \
+     mkdir -p "$HOME/Projects/agentic-engineering/.localdata" && \
+     ~/.temporalio/bin/temporal server start-dev \
+       --db-filename "$HOME/Projects/agentic-engineering/.localdata/temporal-dev.db"; }
    ```
-   Start it with `run_in_background` (it stays up across the run).
+   Start it with `run_in_background` (it stays up across the run). The db file is gitignored
+   (local-only) — it's the machine's cumulative run history, not a committed artifact.
 
 2. **Worker** — start in the background, logging to a file you can tail for the babysit step.
    The `env -u …` strip is **required**: a worker launched from inside a Claude Code session

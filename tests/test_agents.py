@@ -512,6 +512,32 @@ def test_review_diff_activity_adapts_contract_and_carries_required_changes():
     assert "components/Toggle.tsx" in sent  # full file list so a present file can't read as missing
 
 
+def test_review_diff_degrades_to_non_blocking_when_reviewer_cannot_parse():
+    """A reviewer that can't produce schema-valid output must NOT raise: it runs AFTER the
+    expensive coding pass, so raising kills the whole feature workflow and discards the diff
+    (observed with Sonnet on the Vercel gateway 2026-06-30). It degrades to a non-blocking
+    pass (approved=True) — never approved=False, which would burn a full coding revise per
+    MAX_REVIEW_PASSES on a systematic parse failure — and lets CI be the hard gate (§8a)."""
+    from orchestrator.activities.agent_backed import review_diff_with_runner
+    from orchestrator.shared.types import ReviewResult, Story, StoryPlan, StoryResult
+
+    provider = _FakeProvider(payload=None, in_tok=100, out_tok=10)  # never parses -> runner raises
+    plan = StoryPlan(
+        feature_id="feat-x", project="meal-planner",
+        stories=[Story(id="feat-x-S1", title="do a thing", estimate=1)],
+    )
+    result = StoryResult(story_id="feat-x", status="done", pr_ref="", summary="did it",
+                         diff="diff --git a/a.ts b/a.ts\n+const a = 1\n")
+
+    review = review_diff_with_runner(provider, plan, result)
+
+    assert isinstance(review, ReviewResult)
+    assert review.approved is True          # non-blocking, so the pod proceeds to open_pr
+    assert review.required_changes == []    # not a blind revise trigger
+    assert "unavailable" in review.notes.lower()
+    assert len(provider.calls) == 2         # code_reviewer max_reask=1 -> 2 attempts, then degrade
+
+
 def test_qa_review_weighs_diff_and_status_not_just_the_developer_summary():
     """The real QA agent must reach the provider the OBJECTIVE status and the actual diff (not
     only the developer's self-report), and adapt the contract to a QAResult — so an optimistic
