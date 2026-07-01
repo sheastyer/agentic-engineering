@@ -14,11 +14,19 @@ Schema hardening (see issue: code_reviewer systematically failed to parse here):
 `strict: true`, OpenAI-compatible `json_schema` mode is a hint, not grammar-constrained
 decoding, so a model asked for a richer contract (a list field, a conditional invariant)
 can drift — prose before/after the JSON, markdown fences, or an omitted-but-required key.
-`_strict_schema` makes every contract satisfy OpenAI's strict-mode rules (every property
+`_strict_schema` makes a contract satisfy OpenAI's strict-mode rules (every property
 required, no nested `additionalProperties` gaps, no bare `default`) and the request opts
 into `strict: true`; `_extract_json` tolerates a fenced or prose-wrapped response as a
 second line of defense. On a genuine parse miss the raw content is logged so a future
 failure is diagnosable instead of a silent None.
+
+`strict: true` is deliberately opt-in per contract (`_STRICT_MODE_CONTRACTS`), not applied
+to every persona: whether the gateway actually honors it (vs. rejecting an unrecognized
+field, or genuinely enforcing strict grammar a given model/schema can't satisfy) is
+unverified from here — there's no live gateway access in this codebase's test/dev setup.
+Scoping it to just the one contract known to need it means every other persona's request
+stays exactly as it was before this hardening, so this change cannot make an
+already-working persona worse.
 
 Caveats (documented, not silently assumed): effort/adaptive-thinking are Anthropic-native
 and not forwarded here; cache-token reporting via the gateway isn't relied on (treated as
@@ -33,19 +41,29 @@ from typing import Any
 from pydantic import BaseModel
 
 from orchestrator.agents.provider import ProviderResponse, usage_int
+from orchestrator.agents.registry.contracts import CodeReviewOutput
 from orchestrator.shared.config import VERCEL_GATEWAY_BASE_URL, VERCEL_MODELS
 from orchestrator.shared.errors import AuthError
 
 _log = logging.getLogger(__name__)
 
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
+# Contracts that opt into `strict: true` grammar-constrained decoding — see the module
+# docstring for why this isn't every contract.
+_STRICT_MODE_CONTRACTS = {CodeReviewOutput}
+
+# Prefer an explicitly `json`-tagged fence so an illustrative code fence elsewhere in the
+# response (plausible here — the input is a diff full of braces) doesn't get grabbed
+# instead of the real answer; only fall back to any fence if no tagged one is present.
+_JSON_FENCE_RE = re.compile(r"```json\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
+_FENCE_RE = re.compile(r"```\s*(.*?)\s*```", re.DOTALL)
 
 
 def _strict_schema(node: Any) -> Any:
-    """Recursively rewrite a pydantic JSON schema to satisfy OpenAI strict-mode rules:
-    every property is required (optional fields become nullable instead of omittable)
-    and every object forbids additional properties. Strict schemas also reject a bare
-    `default` keyword, so those are stripped too."""
+    """Recursively rewrite a pydantic JSON schema to satisfy OpenAI strict-mode rules: every
+    property is listed in `required` (a field with a pydantic-side default still validates
+    fine if the model omits it — this only affects what's sent as guidance/constraint to the
+    gateway, not our own response validation) and every object forbids additional properties.
+    Strict schemas also reject a bare `default` keyword, so those are stripped too."""
     if isinstance(node, list):
         for item in node:
             _strict_schema(item)
@@ -70,11 +88,12 @@ def _strict_schema(node: Any) -> Any:
 
 
 def _extract_json(content: str) -> str:
-    """Tolerate a fenced or prose-wrapped response: unwrap a ```json fence if present,
-    else take the outermost {...} substring. A best-effort second line of defense behind
-    the strict schema — the runner still re-asks (bounded) if this doesn't parse."""
+    """Tolerate a fenced or prose-wrapped response: unwrap a ```json fence if present (or any
+    fence, if none is tagged), else take the outermost {...} substring. A best-effort second
+    line of defense behind the strict schema — the runner still re-asks (bounded) if this
+    doesn't parse."""
     content = content.strip()
-    fenced = _FENCE_RE.search(content)
+    fenced = _JSON_FENCE_RE.search(content) or _FENCE_RE.search(content)
     if fenced:
         content = fenced.group(1).strip()
     start, end = content.find("{"), content.rfind("}")
@@ -104,15 +123,16 @@ class VercelGatewayProvider:
         self, *, tier, system, messages, output_model: type[BaseModel], effort, max_tokens
     ) -> ProviderResponse:
         model = self._models[tier]
-        schema = _strict_schema(output_model.model_json_schema())
-        response_format = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": output_model.__name__,
-                "schema": schema,
-                "strict": True,
-            },
-        }
+        strict = output_model in _STRICT_MODE_CONTRACTS
+        if strict:
+            schema = _strict_schema(output_model.model_json_schema())
+        else:
+            schema = output_model.model_json_schema()
+            schema.setdefault("additionalProperties", False)  # OpenAI (non-strict) json_schema
+        json_schema: dict[str, Any] = {"name": output_model.__name__, "schema": schema}
+        if strict:
+            json_schema["strict"] = True
+        response_format = {"type": "json_schema", "json_schema": json_schema}
 
         resp = self._openai().chat.completions.create(
             model=model,
