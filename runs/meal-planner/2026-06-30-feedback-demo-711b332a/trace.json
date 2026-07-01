@@ -1,0 +1,209 @@
+{
+  "workflow_id": "feedback-demo-711b332a",
+  "project": "meal-planner",
+  "result": null,
+  "scopes": {
+    "parent": [
+      {
+        "activity": "pm_draft_brief",
+        "payload": {
+          "complexity": "medium",
+          "cost_tokens": 1070,
+          "cost_usd": 0.00783,
+          "problem": "Users have no visibility into what has changed between releases, making it hard to know about new features or fixes.",
+          "project": "meal-planner",
+          "summary": "Add a changelog feature that lets users view what changed in the app, organized by version so each release's changes are visible.",
+          "target_users": "End users of the Meal Planner app who want to track product updates across versions.",
+          "ui_impacting": true
+        }
+      },
+      {
+        "activity": "council_agent_vote",
+        "payload": {
+          "approve": true,
+          "cost_tokens": 964,
+          "cost_usd": 0.004428,
+          "rationale": "A changelog is low-friction and supports retention by surfacing new features (e.g., new recipe sources, planning improvements) that users might otherwise miss, increasing engagement and perceived product momentum. It's not a major differentiator, but the commercial downside is negligible and the transparency benefit aids trust and reduces support questions about 'what changed'.",
+          "voter": "sales"
+        }
+      },
+      {
+        "activity": "council_agent_vote",
+        "payload": {
+          "approve": true,
+          "cost_tokens": 958,
+          "cost_usd": 0.004026,
+          "rationale": "A simple changelog displaying release notes involves no sensitive personal data, no regulated claims, and no third-party IP/licensing concerns; standard practice for ensuring accuracy in any user-facing claims still applies but presents no novel legal risk.",
+          "voter": "legal"
+        }
+      },
+      {
+        "activity": "pm_write_prd",
+        "payload": {
+          "complexity": "medium",
+          "content": "# Changelog Feature PRD\n\n## Problem & Context\n\nMeal Planner ships updates regularly, but end users have no in-app way to learn what changed between releases. New features go unnoticed, and users can't tell whether a bug they hit was already fixed. This erodes trust and reduces feature adoption.\n\nThis PRD adds a read-only, in-app changelog that organizes changes by version so each release's contents are visible to users.\n\n## Goals\n\n- Provide an in-app page where users can view changes organized by release version.\n- Each version entry shows: version identifier, release date, and a list of changes.\n- Each change is categorized (e.g., Added, Fixed, Changed) so users can scan quickly.\n- Versions are displayed newest-first.\n- Changelog content is maintainable by developers as part of the normal PR workflow (no admin UI needed).\n\n## Non-Goals\n\n- No admin/editor UI for authoring changelog entries (content is committed by developers).\n- No per-user \"what's new since you last visited\" tracking, badges, or unread indicators.\n- No email/push notifications about releases.\n- No localization/translation of changelog text (English only for v1).\n- No filtering, search, or pagination of versions.\n- No integration with the chat/agentic meal-planning flow.\n- No automatic generation of changelog content from git history or commits.\n\n## Source of Truth & Data Model\n\nChangelog content is stored as a static, version-controlled data file in the repo (TypeScript module), not in Postgres. This keeps the feature read-only, avoids a migration, and lets changes land via PR alongside the release they describe.\n\nProposed shape (`lib/changelog/data.ts`):\n\n```ts\nexport type ChangeCategory = 'Added' | 'Changed' | 'Fixed';\n\nexport interface ChangelogEntry {\n  category: ChangeCategory;\n  description: string;\n}\n\nexport interface ChangelogRelease {\n  version: string;      // e.g. \"1.4.0\"\n  date: string;         // ISO 8601 date, e.g. \"2026-06-28\"\n  entries: ChangelogEntry[];\n}\n\nexport const changelog: ChangelogRelease[] = [ /* newest first */ ];\n```\n\n## User Stories\n\n1. As a Meal Planner user, I want to open a changelog page so I can see what has changed in the app.\n2. As a user, I want changes grouped by version with a release date so I understand which release introduced a change.\n3. As a user, I want changes labeled by category (Added/Changed/Fixed) so I can quickly find new features versus bug fixes.\n4. As a user, I want the most recent release shown first so the latest information is immediately visible.\n5. As a developer, I want to add a new release entry by editing a single data file in a PR so updating the changelog is part of the normal release flow.\n\n## Acceptance Criteria\n\nSee the flat checklist in the `acceptance_criteria` field; criteria are duplicated here for the implementer:\n\n- A changelog page is reachable at `/changelog` via the App Router.\n- The page renders all releases from the changelog data source, ordered newest-first by version/date.\n- Each release displays its version identifier and release date.\n- Within a release, each change displays its category label and description text.\n- When the changelog data source is empty, the page renders an empty-state message (e.g., \"No changes to show yet.\") and does not error.\n- The changelog is read-only; the page exposes no controls to add, edit, or delete entries.\n- A navigation affordance links users to `/changelog` (e.g., a footer or menu link).\n- The page is keyboard-navigable and uses semantic headings (version as a heading, categories grouped accessibly).\n- No database migration or Drizzle schema change is introduced by this feature.\n- The page renders without authentication if the rest of the app's public pages do; otherwise it follows the app's existing auth convention for app pages.\n- The build passes CI (no use of removed AI SDK v5 APIs; this feature should not touch AI SDK code at all).\n\n## UX Notes\n\n- Route: `/changelog` (App Router page, server component; static rendering since data is static).\n- Layout: page title \"Changelog\"; a vertical list of release sections, newest at top.\n- Each release section: version + date as the section header (e.g., \"1.4.0 \u2014 Jun 28, 2026\"); entries grouped under the header.\n- Category presentation: each entry shows a small category label/badge (Added / Changed / Fixed) followed by the description. Use distinct but subtle styling consistent with the existing design system; do not introduce a new color palette.\n- Empty state: friendly single-line message when no releases exist.\n- Match existing typography, spacing, and component patterns already used in the app; keep changes minimal and focused.\n- Add one navigation link to the changelog from the app's existing navigation (footer preferred to avoid crowding primary nav); confirm placement with the existing nav structure.\n\n## Risks / Open Questions\n\n- Ordering: should ordering be derived from the array order (developer-maintained) or sorted at render time by semver/date? Sorting by semver requires a comparison helper; array-order is simpler but error-prone. Recommend sorting by date descending with version as a tiebreaker \u2014 architect to confirm.\n- Auth context: does the app currently gate all pages behind auth, or are there public pages? This determines whether `/changelog` should be public or authenticated. Needs confirmation against current routing/middleware.\n- Navigation placement: exact location of the changelog link (footer vs. account menu vs. settings) depends on existing nav components \u2014 architect to confirm.\n- Date formatting: confirm preferred display format and whether to use an existing date utility/locale rather than introducing a new dependency.\n- Future scale: static data file is fine for v1; if release volume grows large, rendering all releases on one page may warrant pagination later (explicitly out of scope now).",
+          "cost_tokens": 3418,
+          "cost_usd": 0.06595,
+          "feature_id": "feat-add-a-changelog-feature-that-let",
+          "open_issues": [
+            "Should release ordering be derived from array order or computed at render time by date/semver? Recommend date-descending; needs architect confirmation.",
+            "Is `/changelog` public or behind auth, based on the app's current routing/middleware?",
+            "Where exactly should the changelog navigation link live (footer vs. account menu vs. settings)?",
+            "What date display format and existing date utility should be used to avoid a new dependency?"
+          ],
+          "project": "meal-planner",
+          "version": 1
+        }
+      },
+      {
+        "activity": "architect_review_prd",
+        "payload": {
+          "approved": true,
+          "concerns": [],
+          "cost_tokens": 2929,
+          "cost_usd": 0.014805,
+          "pass_no": 1
+        }
+      },
+      {
+        "activity": "ux_generate_mocks",
+        "payload": {
+          "cost_tokens": 200,
+          "cost_usd": 0.0,
+          "present": true,
+          "ref": "artifact://mocks/feat-add-a-changelog-feature-that-let"
+        }
+      },
+      {
+        "activity": "architect_plan_stories",
+        "payload": {
+          "complexity": "small",
+          "cost_tokens": 3875,
+          "cost_usd": 0.021675,
+          "feature_id": "feat-add-a-changelog-feature-that-let",
+          "project": "meal-planner",
+          "stories": [
+            {
+              "estimate": 3,
+              "id": "feat-add-a-changelog-feature-that-let-S1",
+              "tier": "sonnet",
+              "title": "Add changelog data module and /changelog page with release/category rendering, empty state, and accessible semantic headings"
+            },
+            {
+              "estimate": 1,
+              "id": "feat-add-a-changelog-feature-that-let-S2",
+              "tier": "sonnet",
+              "title": "Add footer navigation link to /changelog matching existing nav structure"
+            }
+          ]
+        }
+      }
+    ],
+    "research": [
+      {
+        "activity": "consumer_research_persona",
+        "payload": {
+          "cost_tokens": 2658,
+          "cost_usd": 0.009486,
+          "notes": "I just signed up and I'm still trying to figure out how to get the meal planner to suggest recipes I actually like - a changelog page isn't something I'd look for right now since I have nothing to compare it to yet. Maybe useful down the road once I've used the app a while, but it's not what's going to make me stick around or feel confident in my first session.",
+          "persona": "first-time user",
+          "sentiment": "neutral"
+        }
+      },
+      {
+        "activity": "consumer_research_persona",
+        "payload": {
+          "cost_tokens": 2635,
+          "cost_usd": 0.009117,
+          "notes": "Honestly this doesn't help me save money on groceries or plan cheaper meals, so it's not a priority for me. I'd rather the dev time go toward better budget filters or cost-per-meal tracking than a page showing version history I'll probably never open.\u200b",
+          "persona": "budget-conscious",
+          "sentiment": "neutral"
+        }
+      },
+      {
+        "activity": "consumer_research_persona",
+        "payload": {
+          "cost_tokens": 2644,
+          "cost_usd": 0.00924,
+          "notes": "Honestly I just need to know what recipes to cook this week without digging through release notes \u2014 a changelog page isn't something I'll ever click on between meetings. If you really build it, fine, but please don't let it eat dev time that should go into making the chat/recipe suggestions faster or smarter.",
+          "persona": "time-constrained professional",
+          "sentiment": "neutral"
+        }
+      },
+      {
+        "activity": "consumer_research_persona",
+        "payload": {
+          "cost_tokens": 2789,
+          "cost_usd": 0.011475,
+          "notes": "Fine as a baseline but pretty bare \u2014 I check changelogs constantly to see if my bug reports got fixed, so no search/filter and no way to jump to a specific version will get old fast once there are 30+ releases. Also surprised there's no 'unread since last visit' indicator since that's usually the main reason power users actually open a changelog instead of ignoring it.",
+          "persona": "power user",
+          "sentiment": "neutral"
+        }
+      },
+      {
+        "activity": "synthesize_research",
+        "payload": {
+          "cost_tokens": 180,
+          "cost_usd": 0.0,
+          "feature_id": "open.\u200b",
+          "findings": [
+            {
+              "cost_tokens": 2635,
+              "cost_usd": 0.009117,
+              "notes": "Honestly this doesn't help me save money on groceries or plan cheaper meals, so it's not a priority for me. I'd rather the dev time go toward better budget filters or cost-per-meal tracking than a page showing version history I'll probably never open.\u200b",
+              "persona": "budget-conscious",
+              "sentiment": "neutral"
+            },
+            {
+              "cost_tokens": 2644,
+              "cost_usd": 0.00924,
+              "notes": "Honestly I just need to know what recipes to cook this week without digging through release notes \u2014 a changelog page isn't something I'll ever click on between meetings. If you really build it, fine, but please don't let it eat dev time that should go into making the chat/recipe suggestions faster or smarter.",
+              "persona": "time-constrained professional",
+              "sentiment": "neutral"
+            },
+            {
+              "cost_tokens": 2789,
+              "cost_usd": 0.011475,
+              "notes": "Fine as a baseline but pretty bare \u2014 I check changelogs constantly to see if my bug reports got fixed, so no search/filter and no way to jump to a specific version will get old fast once there are 30+ releases. Also surprised there's no 'unread since last visit' indicator since that's usually the main reason power users actually open a changelog instead of ignoring it.",
+              "persona": "power user",
+              "sentiment": "neutral"
+            },
+            {
+              "cost_tokens": 2658,
+              "cost_usd": 0.009486,
+              "notes": "I just signed up and I'm still trying to figure out how to get the meal planner to suggest recipes I actually like - a changelog page isn't something I'd look for right now since I have nothing to compare it to yet. Maybe useful down the road once I've used the app a while, but it's not what's going to make me stick around or feel confident in my first session.",
+              "persona": "first-time user",
+              "sentiment": "neutral"
+            }
+          ],
+          "overall_sentiment": "mixed",
+          "summary_ref": "artifact://research/summary"
+        }
+      }
+    ],
+    "pod": [
+      {
+        "activity": "implement_stories",
+        "payload": {
+          "cost_tokens": 19640,
+          "cost_usd": 1.2813432,
+          "diff": "diff --git a/app/calendar/page.tsx b/app/calendar/page.tsx\nindex 7def8d9..d3534a6 100644\n--- a/app/calendar/page.tsx\n+++ b/app/calendar/page.tsx\n@@ -2,6 +2,7 @@\n \n import { useEffect, useState, type CSSProperties } from 'react'\n import { useRouter } from 'next/navigation'\n+import Link from 'next/link'\n import {\n   WD_ABBR,\n   isoDate,\n@@ -151,11 +152,26 @@ export default function CalendarPage() {\n             onTap={() => router.push(`/calendar/${isoDate(d)}`)}\n           />\n         ))}\n+\n+        <Footer />\n       </div>\n     </div>\n   )\n }\n \n+function Footer() {\n+  return (\n+    <footer style={{ marginTop: 18, paddingTop: 6, textAlign: 'center' }}>\n+      <Link\n+        href=\"/changelog\"\n+        style={{ fontSize: 13, fontWeight: 600, color: 'var(--accent)', textDecoration: 'none' }}\n+      >\n+        What&apos;s new\n+      </Link>\n+    </footer>\n+  )\n+}\n+\n const navArrow: CSSProperties = {\n   width: 44,\n   height: 44,\ndiff --git a/app/changelog/page.tsx b/app/changelog/page.tsx\nnew file mode 100644\nindex 0000000..17462b4\n--- /dev/null\n+++ b/app/changelog/page.tsx\n@@ -0,0 +1,139 @@\n+'use client'\n+\n+import { useRouter } from 'next/navigation'\n+import { BackHeader, Screen } from '@/components/ui'\n+import { MO_ABBR, parseIso } from '@/lib/dates'\n+import {\n+  CHANGELOG,\n+  groupEntriesByCategory,\n+  type ChangelogRelease,\n+} from '@/lib/changelog'\n+\n+// \"Jun 30, 2026\" style \u2014 reuses the same month-abbreviation table as the\n+// calendar so date formatting stays consistent app-wide.\n+function formatReleaseDate(iso: string): string {\n+  const d = parseIso(iso)\n+  return `${MO_ABBR[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`\n+}\n+\n+export default function ChangelogPage() {\n+  const router = useRouter()\n+\n+  return (\n+    <Screen>\n+      <BackHeader title=\"What's new\" onBack={() => router.push('/calendar')} />\n+\n+      <div\n+        style={{\n+          flex: 1,\n+          overflowY: 'auto',\n+          padding: '24px 22px 44px',\n+          display: 'flex',\n+          flexDirection: 'column',\n+        }}\n+      >\n+        <h1 style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)', letterSpacing: -0.2 }}>\n+          What&apos;s new\n+        </h1>\n+        <p style={{ marginTop: 8, fontSize: 14, lineHeight: 1.6, color: 'var(--text-2)' }}>\n+          Recent updates and improvements to your meal planner.\n+        </p>\n+\n+        {CHANGELOG.length === 0 ? (\n+          <div\n+            style={{\n+              marginTop: 28,\n+              padding: '28px 18px',\n+              borderRadius: 16,\n+              border: '1.5px dashed var(--border)',\n+              textAlign: 'center',\n+              fontSize: 14,\n+              color: 'var(--text-2)',\n+            }}\n+          >\n+            No updates yet \u2014 check back soon.\n+          </div>\n+        ) : (\n+          CHANGELOG.map((release) => <ReleaseSection key={release.version} release={release} />)\n+        )}\n+\n+        <div style={{ height: 'env(safe-area-inset-bottom)' }} />\n+      </div>\n+    </Screen>\n+  )\n+}\n+\n+function ReleaseSection({ release }: { release: ChangelogRelease }) {\n+  const groups = groupEntriesByCategory(release.entries)\n+  const headingId = `release-${release.version}`\n+\n+  return (\n+    <section style={{ marginTop: 30 }} aria-labelledby={headingId}>\n+      <h2\n+        id={headingId}\n+        style={{\n+          fontSize: 15.5,\n+          fontWeight: 700,\n+          color: 'var(--text)',\n+          display: 'flex',\n+          alignItems: 'baseline',\n+          gap: 8,\n+        }}\n+      >\n+        Version {release.version}\n+        <span style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text-3)' }}>\n+          {formatReleaseDate(release.date)}\n+        </span>\n+      </h2>\n+\n+      {groups.length === 0 ? (\n+        <p style={{ marginTop: 8, fontSize: 13.5, color: 'var(--text-2)' }}>No details for this release.</p>\n+      ) : (\n+        groups.map((group) => (\n+          <div key={group.category} style={{ marginTop: 14 }}>\n+            <h3\n+              style={{\n+                fontSize: 11.5,\n+                fontWeight: 700,\n+                letterSpacing: 0.5,\n+                textTransform: 'uppercase',\n+                color: 'var(--accent)',\n+              }}\n+            >\n+              {group.category}\n+            </h3>\n+            <ul style={{ margin: '6px 0 0', padding: 0, listStyle: 'none' }}>\n+              {group.entries.map((entry, i) => (\n+                <li\n+                  key={i}\n+                  style={{\n+                    marginTop: i === 0 ? 0 : 8,\n+                    paddingLeft: 16,\n+                    position: 'relative',\n+                    fontSize: 14,\n+                    lineHeight: 1.55,\n+                    color: 'var(--text-2)',\n+                  }}\n+                >\n+                  <span\n+                    aria-hidden=\"true\"\n+                    style={{\n+                      position: 'absolute',\n+                      left: 0,\n+                      top: 9,\n+                      width: 5,\n+                      height: 5,\n+                      borderRadius: '50%',\n+                      background: 'var(--accent)',\n+                    }}\n+                  />\n+                  {entry.description}\n+                </li>\n+              ))}\n+            </ul>\n+          </div>\n+        ))\n+      )}\n+    </section>\n+  )\n+}\ndiff --git a/lib/changelog.ts b/lib/changelog.ts\nnew file mode 100644\nindex 0000000..b71826f\n--- /dev/null\n+++ b/lib/changelog.ts\n@@ -0,0 +1,91 @@\n+// Manually curated release notes for the /changelog page. Update this list\n+// whenever a user-facing change ships \u2014 entries are written for the\n+// household reading them, not for engineers. Newest release first.\n+\n+export type ChangelogCategory = 'Added' | 'Changed' | 'Fixed'\n+\n+export type ChangelogEntry = {\n+  category: ChangelogCategory\n+  description: string\n+}\n+\n+export type ChangelogRelease = {\n+  version: string\n+  date: string // YYYY-MM-DD\n+  entries: ChangelogEntry[]\n+}\n+\n+// Render order for grouping a release's entries by category.\n+export const CHANGELOG_CATEGORIES: ChangelogCategory[] = ['Added', 'Changed', 'Fixed']\n+\n+export const CHANGELOG: ChangelogRelease[] = [\n+  {\n+    version: '0.4.0',\n+    date: '2026-06-30',\n+    entries: [\n+      {\n+        category: 'Added',\n+        description: \"A changelog page, linked from the calendar footer, so you can see what's new.\",\n+      },\n+    ],\n+  },\n+  {\n+    version: '0.3.0',\n+    date: '2026-06-22',\n+    entries: [\n+      {\n+        category: 'Added',\n+        description:\n+          'A guardrail that keeps the day-by-day planning chat focused on dinner \u2014 no more off-topic detours.',\n+      },\n+    ],\n+  },\n+  {\n+    version: '0.2.0',\n+    date: '2026-06-10',\n+    entries: [\n+      {\n+        category: 'Added',\n+        description: 'Dark mode, with a toggle in the header that remembers your choice.',\n+      },\n+      {\n+        category: 'Added',\n+        description: \"A feedback button on every screen so you can tell us what's working (or not).\",\n+      },\n+      {\n+        category: 'Changed',\n+        description: 'Household preferences now live alongside individual member profiles on one screen.',\n+      },\n+    ],\n+  },\n+  {\n+    version: '0.1.0',\n+    date: '2026-05-26',\n+    entries: [\n+      {\n+        category: 'Added',\n+        description: 'The weekly dinner calendar, with a chat panel for each day to get a recommendation.',\n+      },\n+      {\n+        category: 'Added',\n+        description: 'Household member profiles \u2014 allergies, preferences, and dislikes that shape every suggestion.',\n+      },\n+      {\n+        category: 'Added',\n+        description: 'Recipe details pulled in from Spoonacular, with prep time, servings, and ingredients.',\n+      },\n+    ],\n+  },\n+]\n+\n+// Groups a release's entries by category, in CHANGELOG_CATEGORIES order,\n+// dropping categories with no entries. Pulled out so the page component\n+// stays focused on rendering.\n+export function groupEntriesByCategory(\n+  entries: ChangelogEntry[],\n+): { category: ChangelogCategory; entries: ChangelogEntry[] }[] {\n+  return CHANGELOG_CATEGORIES.map((category) => ({\n+    category,\n+    entries: entries.filter((e) => e.category === category),\n+  })).filter((group) => group.entries.length > 0)\n+}\n",
+          "pr_ref": "",
+          "status": "failed",
+          "story_id": "feat-add-a-changelog-feature-that-let",
+          "summary": "Implementation complete. Summary of changes:\n\n**1. `lib/changelog.ts` (new)** \u2014 Data module with `ChangelogRelease`/`ChangelogEntry`/`ChangelogCategory` types, a `CHANGELOG` array of release notes (newest-first, reflecting the app's actual shipped features: calendar, household profiles, dark mode, feedback button, chat guardrail), and a `groupEntriesByCategory` helper.\n\n**2. `app/changelog/page.tsx` (new)** \u2014 Client component using the existing `Screen`/`BackHeader` shell (same pattern as `app/h",
+          "tier": "sonnet"
+        }
+      },
+      {
+        "activity": "qa_review",
+        "payload": {
+          "cost_tokens": 4824,
+          "cost_usd": 0.016032,
+          "notes": "The diff substantiates the claimed changelog feature (new lib/changelog.ts, app/changelog/page.tsx, and a link from the calendar footer), but the objective build/test status is reported as failed, which blocks deploy regardless of code completeness. No evidence in the diff or summary explains or fixes the build failure, so this cannot pass the gate.",
+          "passed": false
+        }
+      }
+    ]
+  }
+}

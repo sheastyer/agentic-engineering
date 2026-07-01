@@ -1,0 +1,282 @@
+# story feat-add-a-changelog-feature-that-let
+diff --git a/app/calendar/page.tsx b/app/calendar/page.tsx
+index 7def8d9..d3534a6 100644
+--- a/app/calendar/page.tsx
++++ b/app/calendar/page.tsx
+@@ -2,6 +2,7 @@
+ 
+ import { useEffect, useState, type CSSProperties } from 'react'
+ import { useRouter } from 'next/navigation'
++import Link from 'next/link'
+ import {
+   WD_ABBR,
+   isoDate,
+@@ -151,11 +152,26 @@ export default function CalendarPage() {
+             onTap={() => router.push(`/calendar/${isoDate(d)}`)}
+           />
+         ))}
++
++        <Footer />
+       </div>
+     </div>
+   )
+ }
+ 
++function Footer() {
++  return (
++    <footer style={{ marginTop: 18, paddingTop: 6, textAlign: 'center' }}>
++      <Link
++        href="/changelog"
++        style={{ fontSize: 13, fontWeight: 600, color: 'var(--accent)', textDecoration: 'none' }}
++      >
++        What&apos;s new
++      </Link>
++    </footer>
++  )
++}
++
+ const navArrow: CSSProperties = {
+   width: 44,
+   height: 44,
+diff --git a/app/changelog/page.tsx b/app/changelog/page.tsx
+new file mode 100644
+index 0000000..17462b4
+--- /dev/null
++++ b/app/changelog/page.tsx
+@@ -0,0 +1,139 @@
++'use client'
++
++import { useRouter } from 'next/navigation'
++import { BackHeader, Screen } from '@/components/ui'
++import { MO_ABBR, parseIso } from '@/lib/dates'
++import {
++  CHANGELOG,
++  groupEntriesByCategory,
++  type ChangelogRelease,
++} from '@/lib/changelog'
++
++// "Jun 30, 2026" style — reuses the same month-abbreviation table as the
++// calendar so date formatting stays consistent app-wide.
++function formatReleaseDate(iso: string): string {
++  const d = parseIso(iso)
++  return `${MO_ABBR[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`
++}
++
++export default function ChangelogPage() {
++  const router = useRouter()
++
++  return (
++    <Screen>
++      <BackHeader title="What's new" onBack={() => router.push('/calendar')} />
++
++      <div
++        style={{
++          flex: 1,
++          overflowY: 'auto',
++          padding: '24px 22px 44px',
++          display: 'flex',
++          flexDirection: 'column',
++        }}
++      >
++        <h1 style={{ fontSize: 18, fontWeight: 700, color: 'var(--text)', letterSpacing: -0.2 }}>
++          What&apos;s new
++        </h1>
++        <p style={{ marginTop: 8, fontSize: 14, lineHeight: 1.6, color: 'var(--text-2)' }}>
++          Recent updates and improvements to your meal planner.
++        </p>
++
++        {CHANGELOG.length === 0 ? (
++          <div
++            style={{
++              marginTop: 28,
++              padding: '28px 18px',
++              borderRadius: 16,
++              border: '1.5px dashed var(--border)',
++              textAlign: 'center',
++              fontSize: 14,
++              color: 'var(--text-2)',
++            }}
++          >
++            No updates yet — check back soon.
++          </div>
++        ) : (
++          CHANGELOG.map((release) => <ReleaseSection key={release.version} release={release} />)
++        )}
++
++        <div style={{ height: 'env(safe-area-inset-bottom)' }} />
++      </div>
++    </Screen>
++  )
++}
++
++function ReleaseSection({ release }: { release: ChangelogRelease }) {
++  const groups = groupEntriesByCategory(release.entries)
++  const headingId = `release-${release.version}`
++
++  return (
++    <section style={{ marginTop: 30 }} aria-labelledby={headingId}>
++      <h2
++        id={headingId}
++        style={{
++          fontSize: 15.5,
++          fontWeight: 700,
++          color: 'var(--text)',
++          display: 'flex',
++          alignItems: 'baseline',
++          gap: 8,
++        }}
++      >
++        Version {release.version}
++        <span style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text-3)' }}>
++          {formatReleaseDate(release.date)}
++        </span>
++      </h2>
++
++      {groups.length === 0 ? (
++        <p style={{ marginTop: 8, fontSize: 13.5, color: 'var(--text-2)' }}>No details for this release.</p>
++      ) : (
++        groups.map((group) => (
++          <div key={group.category} style={{ marginTop: 14 }}>
++            <h3
++              style={{
++                fontSize: 11.5,
++                fontWeight: 700,
++                letterSpacing: 0.5,
++                textTransform: 'uppercase',
++                color: 'var(--accent)',
++              }}
++            >
++              {group.category}
++            </h3>
++            <ul style={{ margin: '6px 0 0', padding: 0, listStyle: 'none' }}>
++              {group.entries.map((entry, i) => (
++                <li
++                  key={i}
++                  style={{
++                    marginTop: i === 0 ? 0 : 8,
++                    paddingLeft: 16,
++                    position: 'relative',
++                    fontSize: 14,
++                    lineHeight: 1.55,
++                    color: 'var(--text-2)',
++                  }}
++                >
++                  <span
++                    aria-hidden="true"
++                    style={{
++                      position: 'absolute',
++                      left: 0,
++                      top: 9,
++                      width: 5,
++                      height: 5,
++                      borderRadius: '50%',
++                      background: 'var(--accent)',
++                    }}
++                  />
++                  {entry.description}
++                </li>
++              ))}
++            </ul>
++          </div>
++        ))
++      )}
++    </section>
++  )
++}
+diff --git a/lib/changelog.ts b/lib/changelog.ts
+new file mode 100644
+index 0000000..b71826f
+--- /dev/null
++++ b/lib/changelog.ts
+@@ -0,0 +1,91 @@
++// Manually curated release notes for the /changelog page. Update this list
++// whenever a user-facing change ships — entries are written for the
++// household reading them, not for engineers. Newest release first.
++
++export type ChangelogCategory = 'Added' | 'Changed' | 'Fixed'
++
++export type ChangelogEntry = {
++  category: ChangelogCategory
++  description: string
++}
++
++export type ChangelogRelease = {
++  version: string
++  date: string // YYYY-MM-DD
++  entries: ChangelogEntry[]
++}
++
++// Render order for grouping a release's entries by category.
++export const CHANGELOG_CATEGORIES: ChangelogCategory[] = ['Added', 'Changed', 'Fixed']
++
++export const CHANGELOG: ChangelogRelease[] = [
++  {
++    version: '0.4.0',
++    date: '2026-06-30',
++    entries: [
++      {
++        category: 'Added',
++        description: "A changelog page, linked from the calendar footer, so you can see what's new.",
++      },
++    ],
++  },
++  {
++    version: '0.3.0',
++    date: '2026-06-22',
++    entries: [
++      {
++        category: 'Added',
++        description:
++          'A guardrail that keeps the day-by-day planning chat focused on dinner — no more off-topic detours.',
++      },
++    ],
++  },
++  {
++    version: '0.2.0',
++    date: '2026-06-10',
++    entries: [
++      {
++        category: 'Added',
++        description: 'Dark mode, with a toggle in the header that remembers your choice.',
++      },
++      {
++        category: 'Added',
++        description: "A feedback button on every screen so you can tell us what's working (or not).",
++      },
++      {
++        category: 'Changed',
++        description: 'Household preferences now live alongside individual member profiles on one screen.',
++      },
++    ],
++  },
++  {
++    version: '0.1.0',
++    date: '2026-05-26',
++    entries: [
++      {
++        category: 'Added',
++        description: 'The weekly dinner calendar, with a chat panel for each day to get a recommendation.',
++      },
++      {
++        category: 'Added',
++        description: 'Household member profiles — allergies, preferences, and dislikes that shape every suggestion.',
++      },
++      {
++        category: 'Added',
++        description: 'Recipe details pulled in from Spoonacular, with prep time, servings, and ingredients.',
++      },
++    ],
++  },
++]
++
++// Groups a release's entries by category, in CHANGELOG_CATEGORIES order,
++// dropping categories with no entries. Pulled out so the page component
++// stays focused on rendering.
++export function groupEntriesByCategory(
++  entries: ChangelogEntry[],
++): { category: ChangelogCategory; entries: ChangelogEntry[] }[] {
++  return CHANGELOG_CATEGORIES.map((category) => ({
++    category,
++    entries: entries.filter((e) => e.category === category),
++  })).filter((group) => group.entries.length > 0)
++}

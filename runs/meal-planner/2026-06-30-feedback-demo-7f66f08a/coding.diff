@@ -1,0 +1,979 @@
+# story feat-add-a-changelog-feature-that-let
+diff --git a/app/changelog/page.tsx b/app/changelog/page.tsx
+new file mode 100644
+index 0000000..73b0536
+--- /dev/null
++++ b/app/changelog/page.tsx
+@@ -0,0 +1,198 @@
++import Link from 'next/link'
++import { asc, desc } from 'drizzle-orm'
++import { db } from '@/db/client'
++import {
++  changelogEntries,
++  type ChangelogCategory,
++  type ChangelogEntry,
++} from '@/db/schema'
++
++// Reads the DB per request — never prerendered at build time.
++export const dynamic = 'force-dynamic'
++
++export const metadata = {
++  title: 'Changelog · Dinner',
++  description: 'What’s new in Dinner.',
++}
++
++// Display labels for each category. The object is keyed by every enum value so
++// adding a category to the enum is a compile error here until it's labelled.
++const CATEGORY_LABEL: Record<ChangelogCategory, string> = {
++  added: 'Added',
++  changed: 'Changed',
++  fixed: 'Fixed',
++  removed: 'Removed',
++}
++
++type CategoryGroup = { category: ChangelogCategory; entries: ChangelogEntry[] }
++type VersionGroup = {
++  version: string
++  releasedAt: string
++  categories: CategoryGroup[]
++}
++
++// Groups the flat, already-sorted entry list into version → category buckets
++// while preserving the incoming order. The DB query does the actual ordering
++// (newest version first, canonical category order, then sort_order), so this
++// only needs to fold consecutive runs — never re-sort.
++function groupEntries(entries: ChangelogEntry[]): VersionGroup[] {
++  const versions: VersionGroup[] = []
++  for (const entry of entries) {
++    let version = versions[versions.length - 1]
++    if (!version || version.version !== entry.version) {
++      version = {
++        version: entry.version,
++        releasedAt: entry.releasedAt,
++        categories: [],
++      }
++      versions.push(version)
++    }
++    let category = version.categories[version.categories.length - 1]
++    if (!category || category.category !== entry.category) {
++      category = { category: entry.category, entries: [] }
++      version.categories.push(category)
++    }
++    category.entries.push(entry)
++  }
++  return versions
++}
++
++// Formats a 'YYYY-MM-DD' date column without going through Date() (which would
++// shift the day across timezones for a date-only value).
++function formatReleaseDate(iso: string): string {
++  const [year, month, day] = iso.split('-').map(Number)
++  const months = [
++    'January', 'February', 'March', 'April', 'May', 'June',
++    'July', 'August', 'September', 'October', 'November', 'December',
++  ]
++  if (!year || !month || !day) return iso
++  return `${months[month - 1]} ${day}, ${year}`
++}
++
++export default async function ChangelogPage() {
++  const entries = await db
++    .select()
++    .from(changelogEntries)
++    // Canonical ordering: newest version first (by release date, then version),
++    // then category in enum-declaration order, then the manual sort key. An
++    // enum column sorts by its label declaration order in Postgres, so
++    // `asc(category)` yields Added → Changed → Fixed → Removed.
++    .orderBy(
++      desc(changelogEntries.releasedAt),
++      desc(changelogEntries.version),
++      asc(changelogEntries.category),
++      asc(changelogEntries.sortOrder),
++      asc(changelogEntries.createdAt),
++    )
++
++  const versions = groupEntries(entries)
++
++  return (
++    <div
++      style={{
++        minHeight: '100dvh',
++        maxWidth: 448,
++        margin: '0 auto',
++        background: 'var(--bg)',
++        display: 'flex',
++        flexDirection: 'column',
++      }}
++    >
++      {/* Header */}
++      <div
++        style={{
++          height: 56,
++          flexShrink: 0,
++          display: 'flex',
++          alignItems: 'center',
++          justifyContent: 'space-between',
++          padding: '0 20px',
++          borderBottom: '1px solid var(--border)',
++        }}
++      >
++        <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text)', letterSpacing: -0.5 }}>
++          Changelog
++        </div>
++        <Link
++          href="/calendar"
++          style={{ fontSize: 14, fontWeight: 600, color: 'var(--accent)', textDecoration: 'none' }}
++        >
++          Dinner →
++        </Link>
++      </div>
++
++      {versions.length === 0 ? (
++        <div
++          style={{
++            flex: 1,
++            display: 'flex',
++            flexDirection: 'column',
++            alignItems: 'center',
++            justifyContent: 'center',
++            gap: 8,
++            padding: 24,
++            textAlign: 'center',
++          }}
++        >
++          <div style={{ fontSize: 17, fontWeight: 600, color: 'var(--text)' }}>
++            Nothing here yet
++          </div>
++          <div style={{ fontSize: 14, color: 'var(--text-2)', maxWidth: 260, lineHeight: 1.5 }}>
++            Release notes will show up here as new features ship.
++          </div>
++        </div>
++      ) : (
++        <div style={{ flex: 1, overflowY: 'auto', padding: '24px 22px 44px' }}>
++          {versions.map((version) => (
++            <section key={version.version} style={{ marginBottom: 34 }}>
++              <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 4 }}>
++                <h2 style={{ fontSize: 20, fontWeight: 700, color: 'var(--text)', letterSpacing: -0.3, margin: 0 }}>
++                  v{version.version}
++                </h2>
++              </div>
++              <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text-2)', marginBottom: 16 }}>
++                {formatReleaseDate(version.releasedAt)}
++              </div>
++
++              {version.categories.map((group) => (
++                <div key={group.category} style={{ marginBottom: 18 }}>
++                  <div
++                    style={{
++                      fontSize: 11,
++                      fontWeight: 700,
++                      letterSpacing: 0.8,
++                      textTransform: 'uppercase',
++                      color: 'var(--accent)',
++                      marginBottom: 9,
++                    }}
++                  >
++                    {CATEGORY_LABEL[group.category]}
++                  </div>
++                  <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 9 }}>
++                    {group.entries.map((entry) => (
++                      <li key={entry.id} style={{ display: 'flex', gap: 11, alignItems: 'flex-start' }}>
++                        <span
++                          style={{
++                            width: 6,
++                            height: 6,
++                            borderRadius: '50%',
++                            background: 'var(--accent)',
++                            marginTop: 8,
++                            flexShrink: 0,
++                          }}
++                        />
++                        <span style={{ fontSize: 15, lineHeight: 1.5, color: 'var(--text)' }}>
++                          {entry.description}
++                        </span>
++                      </li>
++                    ))}
++                  </ul>
++                </div>
++              ))}
++            </section>
++          ))}
++        </div>
++      )}
++    </div>
++  )
++}
+diff --git a/app/layout.tsx b/app/layout.tsx
+index 71958e0..9178959 100644
+--- a/app/layout.tsx
++++ b/app/layout.tsx
+@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next'
+ import { Inter } from 'next/font/google'
+ import { cookies, headers } from 'next/headers'
+ import { FeedbackButton } from '@/components/feedback-button'
++import { Footer } from '@/components/footer'
+ import './globals.css'
+ 
+ const inter = Inter({
+@@ -75,6 +76,7 @@ export default async function RootLayout({
+       </head>
+       <body>
+         {children}
++        <Footer />
+         <FeedbackButton />
+       </body>
+     </html>
+diff --git a/components/footer.tsx b/components/footer.tsx
+new file mode 100644
+index 0000000..4391af0
+--- /dev/null
++++ b/components/footer.tsx
+@@ -0,0 +1,29 @@
++import Link from 'next/link'
++
++// Site-wide footer. Rendered once in the root layout so it sits at the bottom
++// of every page's document flow. Kept to the same centered mobile column
++// (max 448px) as the rest of the app.
++export function Footer() {
++  return (
++    <footer
++      style={{
++        maxWidth: 448,
++        margin: '0 auto',
++        padding: '20px 22px 28px',
++        display: 'flex',
++        alignItems: 'center',
++        justifyContent: 'center',
++        gap: 14,
++        fontSize: 13,
++        color: 'var(--text-2)',
++      }}
++    >
++      <Link
++        href="/changelog"
++        style={{ color: 'var(--text-2)', textDecoration: 'none', fontWeight: 500 }}
++      >
++        Changelog
++      </Link>
++    </footer>
++  )
++}
+diff --git a/db/schema.ts b/db/schema.ts
+index 4d28ba5..e445f7c 100644
+--- a/db/schema.ts
++++ b/db/schema.ts
+@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm'
+ import {
+   integer,
+   jsonb,
++  pgEnum,
+   pgTable,
+   text,
+   timestamp,
+@@ -162,6 +163,39 @@ export const mealLog = pgTable(
+   ],
+ )
+ 
++// ── changelog ─────────────────────────────────────────────────────────────
++// Public product changelog. Not tenant-scoped — the same release notes are
++// shown to everyone (and to logged-out visitors on the public /changelog page).
++//
++// Categories follow the "Keep a Changelog" convention. The enum's declaration
++// order IS the canonical display order: Postgres sorts an enum column by the
++// order its labels were defined, so `ORDER BY category` groups entries as
++// Added → Changed → Fixed → Removed with no extra sort key.
++export const changelogCategory = pgEnum('changelog_category', [
++  'added',
++  'changed',
++  'fixed',
++  'removed',
++])
++
++// One row per bullet point. Grouped in the UI by `version` (newest first, via
++// `released_at`) then `category` (canonical enum order) then `sort_order`.
++export const changelogEntries = pgTable('changelog_entries', {
++  id: uuid('id').primaryKey().defaultRandom(),
++  // Semantic version string this entry shipped in, e.g. "1.0.0".
++  version: text('version').notNull(),
++  // Release date of the version — drives newest-first version ordering.
++  releasedAt: date('released_at').notNull(),
++  category: changelogCategory('category').notNull(),
++  description: text('description').notNull(),
++  // Manual ordering of entries within a (version, category) group.
++  sortOrder: integer('sort_order').notNull().default(0),
++  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
++})
++
++export type ChangelogCategory = (typeof changelogCategory.enumValues)[number]
++export type ChangelogEntry = typeof changelogEntries.$inferSelect
++
+ export type Household = typeof households.$inferSelect
+ export type Session = typeof sessions.$inferSelect
+ export type FamilyMember = typeof familyMembers.$inferSelect
+diff --git a/drizzle/0005_loud_secret_warriors.sql b/drizzle/0005_loud_secret_warriors.sql
+new file mode 100644
+index 0000000..421bb21
+--- /dev/null
++++ b/drizzle/0005_loud_secret_warriors.sql
+@@ -0,0 +1,19 @@
++CREATE TYPE "public"."changelog_category" AS ENUM('added', 'changed', 'fixed', 'removed');--> statement-breakpoint
++CREATE TABLE "changelog_entries" (
++	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
++	"version" text NOT NULL,
++	"released_at" date NOT NULL,
++	"category" "changelog_category" NOT NULL,
++	"description" text NOT NULL,
++	"sort_order" integer DEFAULT 0 NOT NULL,
++	"created_at" timestamp with time zone DEFAULT now()
++);
++--> statement-breakpoint
++-- Launch content: the 1.0.0 release notes shown on the public /changelog page.
++INSERT INTO "changelog_entries" ("version", "released_at", "category", "description", "sort_order") VALUES
++	('1.0.0', '2026-06-30', 'added', 'Weekly dinner calendar — plan a confirmed dinner for every day of the week.', 0),
++	('1.0.0', '2026-06-30', 'added', 'Conversational meal planning: chat with the AI planner to get a recommendation for any day.', 1),
++	('1.0.0', '2026-06-30', 'added', 'Household profiles for each family member, including allergies and food preferences.', 2),
++	('1.0.0', '2026-06-30', 'added', 'Recipe details with ingredients, steps, prep time, and servings, powered by Spoonacular.', 3),
++	('1.0.0', '2026-06-30', 'added', 'Meal history with 1–5 star ratings and notes to remember what worked.', 4),
++	('1.0.0', '2026-06-30', 'added', 'Light and dark themes that follow your system preference.', 5);
+diff --git a/drizzle/meta/0005_snapshot.json b/drizzle/meta/0005_snapshot.json
+new file mode 100644
+index 0000000..351961c
+--- /dev/null
++++ b/drizzle/meta/0005_snapshot.json
+@@ -0,0 +1,599 @@
++{
++  "id": "b1965385-2cb0-4ef9-b859-8b64704ffec9",
++  "prevId": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
++  "version": "7",
++  "dialect": "postgresql",
++  "tables": {
++    "public.changelog_entries": {
++      "name": "changelog_entries",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "version": {
++          "name": "version",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "released_at": {
++          "name": "released_at",
++          "type": "date",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "category": {
++          "name": "category",
++          "type": "changelog_category",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "description": {
++          "name": "description",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "sort_order": {
++          "name": "sort_order",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.chat_threads": {
++      "name": "chat_threads",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "slot_date": {
++          "name": "slot_date",
++          "type": "date",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "messages": {
++          "name": "messages",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'[]'::jsonb"
++        },
++        "attendee_ids": {
++          "name": "attendee_ids",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        },
++        "summary": {
++          "name": "summary",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "chat_threads_household_id_households_id_fk": {
++          "name": "chat_threads_household_id_households_id_fk",
++          "tableFrom": "chat_threads",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "chat_threads_household_date_uq": {
++          "name": "chat_threads_household_date_uq",
++          "nullsNotDistinct": false,
++          "columns": [
++            "household_id",
++            "slot_date"
++          ]
++        }
++      },
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.family_members": {
++      "name": "family_members",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "allergies": {
++          "name": "allergies",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'[]'::jsonb"
++        },
++        "preferences": {
++          "name": "preferences",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "family_members_household_id_households_id_fk": {
++          "name": "family_members_household_id_households_id_fk",
++          "tableFrom": "family_members",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.feedback": {
++      "name": "feedback",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "type": {
++          "name": "type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "message": {
++          "name": "message",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "page_path": {
++          "name": "page_path",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "feedback_household_id_households_id_fk": {
++          "name": "feedback_household_id_households_id_fk",
++          "tableFrom": "feedback",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "set null",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.households": {
++      "name": "households",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "clerk_user_id": {
++          "name": "clerk_user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "username": {
++          "name": "username",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "password_hash": {
++          "name": "password_hash",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "preferences_text": {
++          "name": "preferences_text",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "households_username_unique": {
++          "name": "households_username_unique",
++          "nullsNotDistinct": false,
++          "columns": [
++            "username"
++          ]
++        }
++      },
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.meal_log": {
++      "name": "meal_log",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "recipe_id": {
++          "name": "recipe_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "meal_name": {
++          "name": "meal_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "meal_name_norm": {
++          "name": "meal_name_norm",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "rating": {
++          "name": "rating",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "feedback_note": {
++          "name": "feedback_note",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "served_at": {
++          "name": "served_at",
++          "type": "date",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "meal_log_household_id_households_id_fk": {
++          "name": "meal_log_household_id_households_id_fk",
++          "tableFrom": "meal_log",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "meal_log_household_served_norm_uq": {
++          "name": "meal_log_household_served_norm_uq",
++          "nullsNotDistinct": false,
++          "columns": [
++            "household_id",
++            "served_at",
++            "meal_name_norm"
++          ]
++        }
++      },
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.meal_slots": {
++      "name": "meal_slots",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "slot_date": {
++          "name": "slot_date",
++          "type": "date",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "recipe_id": {
++          "name": "recipe_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "recipe_name": {
++          "name": "recipe_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "recipe_snapshot": {
++          "name": "recipe_snapshot",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'confirmed'"
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "meal_slots_household_id_households_id_fk": {
++          "name": "meal_slots_household_id_households_id_fk",
++          "tableFrom": "meal_slots",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "meal_slots_household_date_uq": {
++          "name": "meal_slots_household_date_uq",
++          "nullsNotDistinct": false,
++          "columns": [
++            "household_id",
++            "slot_date"
++          ]
++        }
++      },
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.sessions": {
++      "name": "sessions",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        },
++        "expires_at": {
++          "name": "expires_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "sessions_household_id_households_id_fk": {
++          "name": "sessions_household_id_households_id_fk",
++          "tableFrom": "sessions",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    }
++  },
++  "enums": {
++    "public.changelog_category": {
++      "name": "changelog_category",
++      "schema": "public",
++      "values": [
++        "added",
++        "changed",
++        "fixed",
++        "removed"
++      ]
++    }
++  },
++  "schemas": {},
++  "sequences": {},
++  "roles": {},
++  "policies": {},
++  "views": {},
++  "_meta": {
++    "columns": {},
++    "schemas": {},
++    "tables": {}
++  }
++}
+\ No newline at end of file
+diff --git a/drizzle/meta/_journal.json b/drizzle/meta/_journal.json
+index 7001ec8..9b1da77 100644
+--- a/drizzle/meta/_journal.json
++++ b/drizzle/meta/_journal.json
+@@ -36,6 +36,13 @@
+       "when": 1782000000000,
+       "tag": "0004_add_meal_log",
+       "breakpoints": true
++    },
++    {
++      "idx": 5,
++      "version": "7",
++      "when": 1782870859628,
++      "tag": "0005_loud_secret_warriors",
++      "breakpoints": true
+     }
+   ]
+ }
+\ No newline at end of file
+diff --git a/middleware.ts b/middleware.ts
+index 24b9779..c4f3d8f 100644
+--- a/middleware.ts
++++ b/middleware.ts
+@@ -14,6 +14,12 @@ export function middleware(req: NextRequest) {
+   const hasSession = req.cookies.has(SESSION_COOKIE)
+   const isAuthPage = pathname === '/login' || pathname === '/signup'
+ 
++  // Public routes are viewable signed-in or signed-out — no auth gate and no
++  // redirect either way. The changelog is public product marketing.
++  if (pathname === '/changelog') {
++    return NextResponse.next()
++  }
++
+   if (!hasSession && !isAuthPage) {
+     const url = req.nextUrl.clone()
+     url.pathname = '/login'
