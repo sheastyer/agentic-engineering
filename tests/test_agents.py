@@ -14,7 +14,7 @@ from orchestrator.agents.providers.anthropic_provider import AnthropicProvider
 from orchestrator.agents.providers.factory import build_provider
 from orchestrator.agents.providers.vercel_provider import VercelGatewayProvider
 from orchestrator.agents.registry import get_persona
-from orchestrator.agents.registry.contracts import TriageOutput
+from orchestrator.agents.registry.contracts import CodeReviewOutput, TriageOutput
 from orchestrator.agents.runner import AgentRunner
 from orchestrator.projects.loader import load_profile
 from orchestrator.projects.profile import (
@@ -230,6 +230,94 @@ def test_vercel_provider_builds_openai_request_and_validates_content():
     assert call["model"] == "anthropic/claude-haiku-4.5"
     assert call["response_format"]["type"] == "json_schema"
     assert call["messages"][0]["role"] == "system"  # system folded into messages
+    # Strict mode is opt-in per contract (currently only CodeReviewOutput) so a persona that
+    # already worked on the gateway gets a byte-identical request to before the hardening.
+    assert "strict" not in call["response_format"]["json_schema"]
+
+
+def _fake_completions(content: str):
+    class FakeCompletions:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **kw):
+            self.calls.append(kw)
+            message = SimpleNamespace(content=content)
+            usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5)
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=usage)
+
+    return FakeCompletions()
+
+
+def test_vercel_provider_sends_strict_schema_with_no_optional_fields():
+    """The bug (issue: code_reviewer always degrades on the gateway): CodeReviewOutput has a
+    list field with a pydantic default (`required_changes`), which pydantic's raw JSON schema
+    leaves out of `required` — exactly the shape OpenAI-compatible strict decoding needs
+    spelled out, or the request degrades to a hint the model can drift away from."""
+    completions = _fake_completions(
+        CodeReviewOutput(approved=True, required_changes=[], summary="looks good").model_dump_json()
+    )
+    provider = VercelGatewayProvider(client=SimpleNamespace(chat=SimpleNamespace(completions=completions)))
+    provider.generate_structured(
+        tier="sonnet", system="s", messages=[{"role": "user", "content": "x"}],
+        output_model=CodeReviewOutput, effort="high", max_tokens=100,
+    )
+
+    json_schema = completions.calls[0]["response_format"]["json_schema"]
+    assert json_schema["strict"] is True
+    schema = json_schema["schema"]
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == {"approved", "required_changes", "summary"}
+    assert "default" not in schema["properties"]["required_changes"]
+
+
+def test_vercel_provider_tolerates_fenced_and_prose_wrapped_json():
+    """Second line of defense behind the strict schema: a response that wraps valid JSON in a
+    markdown fence or leading/trailing prose should still parse instead of forcing a re-ask."""
+    payload = CodeReviewOutput(approved=False, required_changes=["fix x"], summary="needs work")
+    wrapped = f"Here is my review:\n```json\n{payload.model_dump_json()}\n```\nLet me know."
+    provider = VercelGatewayProvider(
+        client=SimpleNamespace(chat=SimpleNamespace(completions=_fake_completions(wrapped)))
+    )
+    resp = provider.generate_structured(
+        tier="sonnet", system="s", messages=[{"role": "user", "content": "x"}],
+        output_model=CodeReviewOutput, effort="high", max_tokens=100,
+    )
+
+    assert isinstance(resp.payload, CodeReviewOutput)
+    assert resp.payload.approved is False
+    assert resp.payload.required_changes == ["fix x"]
+
+
+def test_vercel_provider_prefers_json_fence_over_an_earlier_unrelated_fence():
+    """Reviewing a diff is exactly the case where the model may fence example/illustrative
+    code before its verdict — extraction must not grab the wrong block."""
+    payload = CodeReviewOutput(approved=True, required_changes=[], summary="clean")
+    wrapped = (
+        "The diff adds a click handler:\n```js\nfunction handleClick() { setState(true); }\n```\n\n"
+        f"My verdict:\n```json\n{payload.model_dump_json()}\n```"
+    )
+    provider = VercelGatewayProvider(
+        client=SimpleNamespace(chat=SimpleNamespace(completions=_fake_completions(wrapped)))
+    )
+    resp = provider.generate_structured(
+        tier="sonnet", system="s", messages=[{"role": "user", "content": "x"}],
+        output_model=CodeReviewOutput, effort="high", max_tokens=100,
+    )
+
+    assert isinstance(resp.payload, CodeReviewOutput)
+    assert resp.payload.approved is True
+
+
+def test_vercel_provider_still_returns_none_payload_on_genuine_garbage():
+    provider = VercelGatewayProvider(
+        client=SimpleNamespace(chat=SimpleNamespace(completions=_fake_completions("not json at all")))
+    )
+    resp = provider.generate_structured(
+        tier="sonnet", system="s", messages=[{"role": "user", "content": "x"}],
+        output_model=CodeReviewOutput, effort="high", max_tokens=100,
+    )
+    assert resp.payload is None
 
 
 # --- provider factory ----------------------------------------------------------
