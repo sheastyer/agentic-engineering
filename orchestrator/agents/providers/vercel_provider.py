@@ -21,16 +21,24 @@ second line of defense. On a genuine parse miss the raw content is logged so a f
 failure is diagnosable instead of a silent None.
 
 `strict: true` is deliberately opt-in per contract (`_STRICT_MODE_CONTRACTS`), not applied
-to every persona: whether the gateway actually honors it (vs. rejecting an unrecognized
-field, or genuinely enforcing strict grammar a given model/schema can't satisfy) is
-unverified from here — there's no live gateway access in this codebase's test/dev setup.
-Scoping it to just the one contract known to need it means every other persona's request
+to every persona: whether an *arbitrary* contract/model combination would tolerate strict
+mode was unverified from here (no live gateway access in this codebase's test/dev setup) —
+scoping it to just the one contract known to need it means every other persona's request
 stays exactly as it was before this hardening, so this change cannot make an
-already-working persona worse.
+already-working persona worse. `strict: true` itself IS now live-verified against the real
+gateway (2026-06-30) for `code_reviewer`/`CodeReviewOutput` specifically: the gateway
+accepts it and, once a response completes, the JSON is clean (no fence/prose drift).
 
-Caveats (documented, not silently assumed): effort/adaptive-thinking are Anthropic-native
-and not forwarded here; cache-token reporting via the gateway isn't relied on (treated as
-0 unless present).
+Caveats (documented, not silently assumed): `effort` (Anthropic adaptive-thinking) is not
+forwarded here — but live testing shows the underlying Sonnet call triggers extended
+thinking regardless, entirely outside our control (confirmed: passing
+`extra_body={"thinking": {"type": "disabled"}}` is silently ignored by the gateway), and
+that thinking is billed against and shares the same visible-completion `max_tokens` budget
+as the structured output. Its length is highly variable per call even for an identical
+prompt (observed ~1.3k-4.4k+ tokens across repeated live calls on the same diff) — size
+`max_tokens` generously for any contract that hits this path, or a truncated completion
+looks identical to the schema-drift failure this module otherwise defends against. Also:
+cache-token reporting via the gateway isn't relied on (treated as 0 unless present).
 """
 
 import logging

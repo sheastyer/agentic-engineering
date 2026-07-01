@@ -264,10 +264,18 @@ REGISTRY: dict[str, Persona] = {
         system_template=_CODE_REVIEW_PROMPT,
         output_model=contracts.CodeReviewOutput,
         effort="high",
-        # 4096, not 2048: providers without a separate thinking channel (the Vercel gateway
-        # doesn't forward `effort`/adaptive-thinking) put any reasoning inline in this budget
-        # before the JSON verdict, and a truncated completion is unparseable JSON.
-        max_tokens=4096,
+        # 16000, not 2048: live-tested against the real Vercel gateway (2026-06-30) — Sonnet
+        # triggers Anthropic extended thinking on this call REGARDLESS of not forwarding
+        # `effort` (confirmed: `extra_body={"thinking": {"type": "disabled"}}` is silently
+        # ignored by the gateway), and that thinking shares this same visible-completion
+        # budget. Observed thinking alone ranging ~1.3k-4.4k tokens across repeated identical
+        # calls on the same diff, with a still-growing 6k+ token run truncated mid-thought —
+        # i.e. NOT a fixed cost, a highly variable one. 4096 reproduced the original "always
+        # degrades" bug live (2/2 truncations, empty content); 8000-16000 held (6/6 across
+        # spot checks). Sized generously above the observed tail since the $ cost of a wider
+        # budget here is negligible (worst case ~$0.25/review) next to a silently-degraded
+        # reviewer.
+        max_tokens=16000,
     ),
     "qa_reviewer": Persona(
         name="qa_reviewer",
