@@ -264,7 +264,10 @@ REGISTRY: dict[str, Persona] = {
         system_template=_CODE_REVIEW_PROMPT,
         output_model=contracts.CodeReviewOutput,
         effort="high",
-        max_tokens=2048,  # a verdict + a list of required changes
+        # 4096, not 2048: providers without a separate thinking channel (the Vercel gateway
+        # doesn't forward `effort`/adaptive-thinking) put any reasoning inline in this budget
+        # before the JSON verdict, and a truncated completion is unparseable JSON.
+        max_tokens=4096,
     ),
     "qa_reviewer": Persona(
         name="qa_reviewer",
