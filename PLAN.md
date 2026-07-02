@@ -81,7 +81,29 @@ Profiles declare `stack.sandbox_tests=False` when their suite can't run in the s
 the objective gate) instead of the misleading "failed" that poisoned every meal-planner QA
 read; `StoryResult.build_status` carries the honest verdict to the QA agent.
 `MAX_QA_FIX_PASSES` back to 1 org-wide (the 0 was meal-planner tuning leaked into org
-config). **115 tests green** (incl. a bug-path replay test covering the pod child).
+config). **118 tests green** (incl. a bug-path replay test covering the pod child).
+
+**Steel thread validated live, both paths (2026-07-02):** a feature ("clear checked
+items" button → **meal-planner PR #49**, $1.92, audit PR #15) and a bug ("unstyled 404
+page" → **meal-planner PR #50**, $0.99, audit PR #16) each ran feedback → … → real
+coding → QA agent pass → reviewed PR → real CI green → gated merge. Two run-killing
+defects were found and fixed along the way (each after a live failure):
+(e) **QA fails safe** — qa_reviewer truncated on the gateway on both re-asks (its 1024
+max_tokens shared with forced Sonnet thinking) and the resulting raise AFTER the coding
+pass killed the workflow and orphaned a finished diff; `qa_review_with_runner` now
+degrades to `QAResult(passed=False)` (halt at the QA gate, diff preserved in a PR — QA
+is a hard gate so it must fail safe, not pass silently). qa_reviewer → 16000 tokens,
+architect_review_prd → 12000; QAReviewOutput + ArchitectReviewOutput joined the
+vercel provider's `_STRICT_MODE_CONTRACTS`. Watch list: `pm_revise_prd` (8192) showed
+one recovered truncation.
+(f) **Shared enums are `StrEnum`** — temporalio 1.28 decodes a `(str, Enum)` type hint
+as a **char list** (`kind: "bug"` → `['b','u','g']`, Python 3.14); first live run that
+consumed a real `Triage` field-by-field across the activity boundary crashed at
+`pm_prioritize`. `tests/test_serialization.py` pins the round-trip.
+Known residuals: reasoning activities make blocking HTTP calls on the worker's async
+event loop (Temporal's deadlock detector fires transiently and recovers — move them to
+sync/thread-pool activities or the async client), and the run-org driver's auto-approval
+stands in for the M5 human-I/O channel (Slack planned).
 
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`
