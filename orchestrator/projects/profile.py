@@ -6,10 +6,14 @@ data. Adding a new project = writing a new profile, never editing the org. Profi
 """
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
+
+# StrEnum, not (str, Enum) — same temporalio-converter rationale as shared/types.py:
+# a (str, Enum) type hint decodes as a char list if the value ever crosses an
+# activity boundary. Profiles are loaded locally today, but keep the enums safe.
 
 
-class IntakeKind(str, Enum):
+class IntakeKind(StrEnum):
     """How feedback enters the org for this project (the M5 intake adapter implements it)."""
 
     DB_TABLE = "db_table"
@@ -19,7 +23,7 @@ class IntakeKind(str, Enum):
     MANUAL = "manual"
 
 
-class DeployKind(str, Enum):
+class DeployKind(StrEnum):
     """What 'deploy' concretely means for this project (always behind a human gate, §9.2)."""
 
     OPEN_PR = "open_pr"

@@ -2,7 +2,7 @@
 name = "agentic-org"
 version = "0.1.0"
 description = "A project-agnostic product/engineering organization built from autonomous agents, orchestrated with Temporal."
-requires-python = ">=3.10"
+requires-python = ">=3.11"  # StrEnum (see shared/types.py — temporalio converter safety)
 dependencies = [
     "temporalio>=1.28",
     "pydantic>=2",

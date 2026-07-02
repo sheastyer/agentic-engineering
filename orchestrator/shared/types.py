@@ -7,15 +7,19 @@ return small canned values and real agents (M3+) will return measured token coun
 """
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
+
+# StrEnum, NOT (str, Enum): temporalio 1.28's JSON converter mis-decodes a `(str, Enum)`
+# type hint as a list of characters (kind: "bug" -> ['b','u','g']; reproduced on Python
+# 3.14, killed a live bug run 2026-07-02 at pm_prioritize). StrEnum round-trips correctly.
 
 
-class FeedbackKind(str, Enum):
+class FeedbackKind(StrEnum):
     BUG = "bug"
     FEATURE = "feature"
 
 
-class Status(str, Enum):
+class Status(StrEnum):
     """Terminal (and a couple of in-flight) workflow states."""
 
     RUNNING = "running"
