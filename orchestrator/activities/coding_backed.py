@@ -97,6 +97,7 @@ def _coding_task(instruction: str, profile: ProjectProfile, tier: str = "sonnet"
         tier=tier,                             # model-selection phase: complex work -> opus, else sonnet
         max_turns=CODING_MAX_TURNS,            # cost cap (subscription) — see config
         max_budget_usd=CODING_MAX_BUDGET_USD,  # hard per-attempt spend ceiling
+        run_tests=profile.stack.sandbox_tests, # honest QA: don't run a suite the sandbox can't
     )
 
 
@@ -132,12 +133,15 @@ async def _run_coding(
     outcome, qa = await implement_and_verify(
         agent, task, source, from_git=from_git, sandbox=sandbox
     )
+    # "done" needs BOTH a non-failing verdict AND an actual diff: with in-sandbox tests
+    # unavailable qa.passed is True by construction, and an empty diff must not read as done.
     return StoryResult(
         story_id=story_id,
-        status="done" if qa.passed else "failed",
+        status="done" if (qa.passed and outcome.diff.strip()) else "failed",
         pr_ref="",
         diff=outcome.diff,
         summary=outcome.summary,
+        build_status=f"{qa.status or ('passed' if qa.passed else 'failed')}: {qa.notes}",
         tier=tier,
         cost_tokens=outcome.input_tokens + outcome.output_tokens,
         cost_usd=outcome.cost_usd,

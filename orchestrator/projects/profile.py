@@ -41,6 +41,12 @@ class Stack:
     package_manager: str
     test_command: str
     build_command: str = ""
+    # Can `test_command` actually run inside the org's coding sandbox? False for targets
+    # whose suite needs things the sandbox denies (network installs, browsers, a DB) — the
+    # pod then reports QA "unavailable" (honest) instead of "failed" (misleading), and the
+    # PR's CI is the objective gate. This knob living HERE (not org config) is deliberate:
+    # it's per-target knowledge (§3).
+    sandbox_tests: bool = True
 
 
 @dataclass

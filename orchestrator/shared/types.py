@@ -26,6 +26,7 @@ class Status(str, Enum):
     ESCALATED = "escalated"      # a human gate timed out
     OVER_BUDGET = "over_budget"  # budget ceiling hit and the override was declined/timed out
     CI_FAILED = "ci_failed"      # the PR's CI was still red after the bounded fix loop; halted before merge
+    QA_FAILED = "qa_failed"      # the QA agent failed the pod's output after the bounded fix loop; halted before deploy (symmetric with CI_FAILED)
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +159,8 @@ class StoryResult:
     pr_ref: str
     diff: str = ""              # unified diff the pod produced (assembled into the PR)
     summary: str = ""           # short note on what the coding attempt did
+    build_status: str = ""      # honest in-sandbox verdict fed to the QA agent: "passed: …" |
+                                # "failed: …" | "unavailable: …" (tests can't run there — not a failure)
     tier: str = ""              # coding-model tier that actually ran this attempt (traced so the
                                 # audit shows which model tackled the work); "" for stub/non-agent
     cost_tokens: int = 0

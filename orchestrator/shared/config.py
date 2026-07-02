@@ -8,7 +8,7 @@ TASK_QUEUE = "agentic-org"
 # Bounded-loop caps (CLAUDE.md §10 — every agent<->agent loop has an explicit cap).
 MAX_PRD_PASSES = 3          # PRD <-> architect review loop
 MAX_SIGNOFF_REVISIONS = 2   # PM sign-off -> PRD revision loopback
-MAX_QA_FIX_PASSES = 0       # engineering pod QA -> fix loop (0 for the offline meal-planner: its tests can't run in the sandbox, so a fix pass can never go green and would just double coding cost; set 1 when the target has runnable tests)
+MAX_QA_FIX_PASSES = 1       # engineering pod QA -> fix loop. Safe as an org-wide cap now: a target whose tests can't run in the sandbox declares stack.sandbox_tests=False in its PROFILE, which makes QA report "unavailable" (passed) — so this loop only ever fires on a genuine red from a runnable suite. (The old 0 was meal-planner-specific tuning leaked into org config, §3.)
 MAX_REVIEW_PASSES = 1       # engineering pod code-review -> revise loop, BEFORE the PR opens. The reviewer is a cheap reasoning-plane call, but each *revise* pass is a full coding re-run on the Claude subscription (§10) — so this is a hard cost lever; keep it at 1 (one chance to address review) unless coding spend is acceptable.
 MAX_CI_FIX_PASSES = 1       # engineering pod CI gate -> fix loop, AFTER the PR opens. The org waits for the PR's real CI to conclude; on failure it feeds the failing checks back to the coding agent, pushes the fix to the SAME PR, and re-checks — bounded here because each pass is a full coding re-run on the subscription PLUS a CI wait (§10). If CI is still red after the cap, the workflow halts (does not merge) for a human.
 

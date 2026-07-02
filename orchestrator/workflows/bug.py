@@ -135,6 +135,15 @@ class BugWorkflow:
         self._cost_usd += pod.cost_usd
         await self._check_budget()
 
+        # QA gate (hard, symmetric with the feature path): halt before deploy on a red QA
+        # verdict. ("Tests unavailable in sandbox" is not a fail — the profile declares that.)
+        if not pod.qa.passed:
+            self._status = Status.QA_FAILED
+            self._enter("qa_failed")
+            return self._result(
+                event, f"QA failed on the pod's output; halted before deploy. {pod.qa.notes}"
+            )
+
         # CI gate (hard, §9.2): never surface a red PR to the deploy gate, let alone merge it.
         if not pod.ci_passed:
             self._status = Status.CI_FAILED

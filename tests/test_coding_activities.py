@@ -72,13 +72,17 @@ def _profile(
     local_path: str = "",
     git_remote: str = "file:///unused",
     deploy_kind: DeployKind = DeployKind.OPEN_PR,
+    sandbox_tests: bool = True,
 ) -> ProjectProfile:
     return ProjectProfile(
         id="fixture",
         name="Fixture",
         description="seeded test target",
         repo=Repo(git_remote=git_remote, default_branch="main", local_path=local_path),
-        stack=Stack(languages=["python"], package_manager="pip", test_command=TEST_COMMAND),
+        stack=Stack(
+            languages=["python"], package_manager="pip", test_command=TEST_COMMAND,
+            sandbox_tests=sandbox_tests,
+        ),
         intake=Intake(kind=IntakeKind.MANUAL),
         deploy=Deploy(kind=deploy_kind),
     )
@@ -141,6 +145,33 @@ async def test_implement_story_failed_when_noop_attempt_leaves_bug(tmp_path):
         agent, Story(id="S1", title="Fix add()", estimate=1), _profile(git_remote=repo)
     )
     assert result.status == "failed"
+
+
+async def test_sandbox_tests_false_reports_unavailable_not_failed(tmp_path):
+    """Honest QA (2026-07-02): a target whose suite can't run in the sandbox (profile
+    stack.sandbox_tests=False) must report "unavailable" — NOT "failed", which poisoned the
+    QA agent's verdict on every meal-planner run. The attempt with a real diff is done."""
+    repo = _seeded_git_repo(tmp_path)
+    # An edit that does NOT fix the seeded bug: had the tests run, this would be "failed".
+    agent = MockCodingAgent(edits=[FileEdit(path="mathlib.py", find="seeded bug", replace="known bug")])
+    result = await implement_story_with_pod(
+        agent, Story(id="S1", title="tweak comment", estimate=1),
+        _profile(git_remote=repo, sandbox_tests=False),
+    )
+    assert result.status == "done"
+    assert result.build_status.startswith("unavailable")
+    assert result.diff.strip()
+
+
+async def test_sandbox_tests_false_empty_diff_is_still_failed(tmp_path):
+    """QA "unavailable" must not launder an empty diff into a done story — no diff, no ship."""
+    repo = _seeded_git_repo(tmp_path)
+    result = await implement_story_with_pod(
+        MockCodingAgent(edits=[]), Story(id="S1", title="Fix add()", estimate=1),
+        _profile(git_remote=repo, sandbox_tests=False),
+    )
+    assert result.status == "failed"
+    assert result.build_status.startswith("unavailable")
 
 
 def test_open_pr_applies_diff_locally_without_pushing(tmp_path):

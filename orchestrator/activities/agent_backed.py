@@ -521,7 +521,7 @@ def qa_review_with_runner(
             )
         blocks.append(
             f"=== Attempt {i}: {r.story_id} ===\n"
-            f"Objective build/test status: {r.status}\n"
+            f"Objective build/test status: {r.build_status or r.status}\n"
             f"Developer's summary: {r.summary or '(none)'}\n"
             f"Files changed (complete set):\n{files_list}{note}\n"
             f"Unified diff:\n{diff}"
