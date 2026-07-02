@@ -1,0 +1,299 @@
+# story feat-add-a--clear-checked-items--butt
+diff --git a/app/api/shopping-list/items/route.ts b/app/api/shopping-list/items/route.ts
+index 4fb6797..7df9b70 100644
+--- a/app/api/shopping-list/items/route.ts
++++ b/app/api/shopping-list/items/route.ts
+@@ -1,6 +1,6 @@
+ import { NextResponse } from 'next/server'
+ import { requireHousehold, unauthorized } from '@/lib/auth'
+-import { addManualItem, getActiveList } from '@/lib/shopping/service'
++import { addManualItem, clearCheckedItems, getActiveList } from '@/lib/shopping/service'
+ import { parseManualItemBody } from '@/lib/shopping/validate'
+ 
+ export const runtime = 'nodejs'
+@@ -23,3 +23,18 @@ export async function POST(req: Request) {
+   const item = await addManualItem(householdId, list, parsed.value)
+   return NextResponse.json({ item }, { status: 201 })
+ }
++
++// DELETE /api/shopping-list/items
++// Clear every checked item on the active list in one atomic statement.
++// Returns 200 { removed: string[] } (the deleted item ids — an empty array
++// when nothing was checked); 404 when the household has no active list.
++export async function DELETE() {
++  const householdId = await requireHousehold()
++  if (!householdId) return unauthorized()
++
++  const list = await getActiveList(householdId)
++  if (!list) return NextResponse.json({ error: 'No active list' }, { status: 404 })
++
++  const removed = await clearCheckedItems(householdId, list.id)
++  return NextResponse.json({ removed })
++}
+diff --git a/app/shopping/page.tsx b/app/shopping/page.tsx
+index 41c9aa9..ed1ac88 100644
+--- a/app/shopping/page.tsx
++++ b/app/shopping/page.tsx
+@@ -67,6 +67,9 @@ export default function ShoppingPage() {
+     return unresolvedBannerText(days)
+   })
+   const [expandedId, setExpandedId] = useState<string | null>(null)
++  const [clearConfirmOpen, setClearConfirmOpen] = useState(false)
++  const [clearing, setClearing] = useState(false)
++  const [clearError, setClearError] = useState<string | null>(null)
+   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+ 
+   const showToast = useCallback((message: string) => {
+@@ -172,6 +175,28 @@ export default function ShoppingPage() {
+     [showToast],
+   )
+ 
++  // Bulk-clear, gated behind the confirm dialog (destructive, no per-item
++  // undo like the single-item delete has). Not optimistic — the dialog's own
++  // loading/error state carries the wait, since the action is already an
++  // explicit, confirmed intent rather than a hot in-store tap.
++  const clearChecked = useCallback(async () => {
++    setClearing(true)
++    setClearError(null)
++    try {
++      const res = await fetch('/api/shopping-list/items', { method: 'DELETE' })
++      if (!res.ok) throw new Error('clear failed')
++      const data: { removed: string[] } = await res.json()
++      const removed = new Set(data.removed)
++      setItems((prev) => prev.filter((i) => !removed.has(i.id)))
++      setClearConfirmOpen(false)
++      showToast(removed.size === 1 ? '1 item cleared' : `${removed.size} items cleared`)
++    } catch {
++      setClearError('Couldn’t clear checked items — try again')
++    } finally {
++      setClearing(false)
++    }
++  }, [showToast])
++
+   const addItem = useCallback(
+     async (name: string, category: StoreSection | undefined) => {
+       try {
+@@ -278,6 +303,8 @@ export default function ShoppingPage() {
+           onRefresh={refresh}
+           onEditDaysServings={() => router.push('/shopping/build?edit=1')}
+           onStartNew={() => router.push('/shopping/build')}
++          onClearChecked={() => setClearConfirmOpen(true)}
++          checkedCount={checked}
+         />
+       </div>
+ 
+@@ -302,6 +329,18 @@ export default function ShoppingPage() {
+ 
+       <AddItemBar onAdd={addItem} />
+       {toast && <Toast message={toast} bottom="calc(150px + var(--dock-space))" />}
++      {clearConfirmOpen && (
++        <ClearCheckedDialog
++          count={checked}
++          clearing={clearing}
++          error={clearError}
++          onConfirm={clearChecked}
++          onCancel={() => {
++            setClearConfirmOpen(false)
++            setClearError(null)
++          }}
++        />
++      )}
+     </Shell>
+   )
+ }
+@@ -808,11 +847,15 @@ function OverflowMenu({
+   onRefresh,
+   onEditDaysServings,
+   onStartNew,
++  onClearChecked,
++  checkedCount,
+ }: {
+   onCopy: () => void
+   onRefresh: () => void
+   onEditDaysServings: () => void
+   onStartNew: () => void
++  onClearChecked: () => void
++  checkedCount: number
+ }) {
+   const [open, setOpen] = useState(false)
+   const wrapRef = useRef<HTMLDivElement>(null)
+@@ -899,6 +942,16 @@ function OverflowMenu({
+             📅 Edit days &amp; servings
+           </MenuItem>
+           <MenuDivider />
++          <MenuItem
++            disabled={checkedCount === 0}
++            onClick={() => {
++              setOpen(false)
++              onClearChecked()
++            }}
++          >
++            🧹 Clear checked items
++          </MenuItem>
++          <MenuDivider />
+           <MenuItem
+             onClick={() => {
+               setOpen(false)
+@@ -913,7 +966,15 @@ function OverflowMenu({
+   )
+ }
+ 
+-function MenuItem({ children, onClick }: { children: ReactNode; onClick: () => void }) {
++function MenuItem({
++  children,
++  onClick,
++  disabled = false,
++}: {
++  children: ReactNode
++  onClick: () => void
++  disabled?: boolean
++}) {
+   const style: CSSProperties = {
+     display: 'flex',
+     alignItems: 'center',
+@@ -921,13 +982,14 @@ function MenuItem({ children, onClick }: { children: ReactNode; onClick: () => v
+     padding: '13px 16px',
+     fontSize: 14.5,
+     fontWeight: 600,
+-    color: 'var(--text)',
++    color: disabled ? 'var(--text-3)' : 'var(--text)',
+     background: 'var(--surface)',
+     textAlign: 'left',
+     whiteSpace: 'nowrap',
++    opacity: disabled ? 0.5 : 1,
+   }
+   return (
+-    <button role="menuitem" onClick={onClick} style={style}>
++    <button role="menuitem" onClick={onClick} disabled={disabled} style={style}>
+       {children}
+     </button>
+   )
+@@ -936,3 +998,100 @@ function MenuItem({ children, onClick }: { children: ReactNode; onClick: () => v
+ function MenuDivider() {
+   return <div style={{ height: 1, background: 'var(--border)' }} />
+ }
++
++// ── Clear checked items — confirm dialog ────────────────────────────────
++// A destructive, non-optimistic bulk action, so it gets a confirm step
++// (unlike the single-item delete/check-toggle, which are optimistic and
++// individually reversible). Same backdrop + role="dialog" pattern as
++// FeedbackButton's modal.
++function ClearCheckedDialog({
++  count,
++  clearing,
++  error,
++  onConfirm,
++  onCancel,
++}: {
++  count: number
++  clearing: boolean
++  error: string | null
++  onConfirm: () => void
++  onCancel: () => void
++}) {
++  return (
++    <>
++      <div
++        role="none"
++        onClick={clearing ? undefined : onCancel}
++        style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(0,0,0,0.4)' }}
++      />
++      <div
++        role="dialog"
++        aria-modal="true"
++        aria-labelledby="clear-checked-title"
++        style={{
++          position: 'fixed',
++          left: '50%',
++          top: '50%',
++          transform: 'translate(-50%, -50%)',
++          zIndex: 61,
++          width: 'calc(100vw - 48px)',
++          maxWidth: 360,
++          background: 'var(--surface)',
++          border: '1px solid var(--border)',
++          borderRadius: 18,
++          padding: 22,
++          boxShadow: 'var(--shadow-lg, 0 8px 24px rgba(0,0,0,0.24))',
++        }}
++      >
++        <div id="clear-checked-title" style={{ fontSize: 17, fontWeight: 700, color: 'var(--text)' }}>
++          Clear checked items?
++        </div>
++        <div style={{ marginTop: 8, fontSize: 14, lineHeight: 1.5, color: 'var(--text-2)' }}>
++          {count === 1
++            ? 'This removes the 1 checked item from your list. This can’t be undone.'
++            : `This removes all ${count} checked items from your list. This can’t be undone.`}
++        </div>
++        {error && (
++          <div role="alert" style={{ marginTop: 12, fontSize: 13, fontWeight: 600, color: 'var(--terracotta)' }}>
++            {error}
++          </div>
++        )}
++        <div style={{ marginTop: 20, display: 'flex', gap: 10 }}>
++          <button
++            onClick={onCancel}
++            disabled={clearing}
++            style={{
++              flex: 1,
++              height: 46,
++              borderRadius: 12,
++              fontSize: 14.5,
++              fontWeight: 600,
++              color: 'var(--text)',
++              background: 'var(--bg)',
++              border: '1px solid var(--border)',
++              opacity: clearing ? 0.6 : 1,
++            }}
++          >
++            Cancel
++          </button>
++          <button
++            onClick={onConfirm}
++            disabled={clearing}
++            style={{
++              flex: 1,
++              height: 46,
++              borderRadius: 12,
++              fontSize: 14.5,
++              fontWeight: 600,
++              color: '#fff',
++              background: 'var(--terracotta)',
++              opacity: clearing ? 0.7 : 1,
++            }}
++          >
++            {clearing ? 'Clearing…' : 'Clear'}
++          </button>
++        </div>
++      </div>
++    </>
++  )
++}
+diff --git a/lib/shopping/service.ts b/lib/shopping/service.ts
+index c42ab5c..9f52671 100644
+--- a/lib/shopping/service.ts
++++ b/lib/shopping/service.ts
+@@ -478,4 +478,23 @@ export async function deleteItem(id: string, householdId: string): Promise<void>
+     .where(and(eq(shoppingListItems.id, id), eq(shoppingListItems.householdId, householdId)))
+ }
+ 
++// DELETE /api/shopping-list/items — bulk-remove every checked item on the
++// active list in one statement (a single DELETE ... WHERE is atomic in
++// Postgres — no read-then-delete race window). Scoped by household_id +
++// list_id, same as every other item mutation. Returns the removed ids so the
++// client can reconcile local state without a full refetch.
++export async function clearCheckedItems(householdId: string, listId: string): Promise<string[]> {
++  const rows = await db
++    .delete(shoppingListItems)
++    .where(
++      and(
++        eq(shoppingListItems.householdId, householdId),
++        eq(shoppingListItems.listId, listId),
++        eq(shoppingListItems.checked, true),
++      ),
++    )
++    .returning({ id: shoppingListItems.id })
++  return rows.map((r) => r.id)
++}
++
+ export { fetchOwnedItem }
