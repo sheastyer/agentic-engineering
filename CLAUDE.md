@@ -34,7 +34,8 @@ may assume that app.
 
 For feature requests: brief → exec-council vote → PRD ↔ architect loop → synthetic
 consumer research → story breakdown → implementation → QA → gated deploy. Bugs follow
-a shorter triage → prioritize → fix → review → deploy path.
+a shorter triage → prioritize path into the SAME engineering pod (one pod, two entry
+points), then the same QA/CI gates and gated deploy.
 
 ---
 
@@ -96,7 +97,7 @@ workspace per workflow run" for sandbox isolation (§9.6), but not yet decided (
                 Project Profile  ──┐          activities call ──►  Agent Runner  ──►  persona registry
                 (project-specific  │                              │                  (prompt+tools+model)
                  knowledge)        └──────────►  child workflows ──►  ConsumerResearch (fan-out)
-                                                                      EngineeringPod  (Agent SDK in worktrees;
+                                                                      EngineeringPod  (Agent SDK, container sandbox;
                                                                                        code-review ↔ revise loop pre-PR)
 ```
 
@@ -157,28 +158,24 @@ Build the runner so adding the 11th or 20th persona is a new registry entry, nev
 new program. The PM, legal, sales, architect, UX, synthetic-user, and engineer agents
 all run through the same runner.
 
-### Model-provider abstraction
+### Model provider — one per plane (decided 2026-07-02)
 The runner depends only on a `ModelProvider` interface (`generate_structured(...) →
-ProviderResponse`), so the org is **provider-agnostic** and supports bring-your-own
-backends. Two ship today, selected by the `MODEL_PROVIDER` env var (default `anthropic`):
-- **`anthropic`** — Anthropic Messages SDK with native structured outputs; credentials
-  resolve to a **Claude subscription** (OAuth profile) or a direct API key. Adaptive
-  thinking + effort applied for sonnet/opus.
-- **`vercel`** — Vercel AI Gateway via its OpenAI-compatible endpoint
+ProviderResponse`), which keeps it testable ($0 fakes) — but the org deliberately ships
+**one provider per plane**, not a bring-your-own matrix:
+- **Reasoning plane = Vercel AI Gateway, only.** OpenAI-compatible endpoint
   (`ai-gateway.vercel.sh/v1`, `AI_GATEWAY_API_KEY`); tiers map to gateway-namespaced
-  model ids (`anthropic/claude-…`).
+  model ids (`anthropic/claude-…`). `ORG_LIVE=1` on the worker turns every reasoning
+  persona live; the worker fails fast at startup without the key. (The earlier
+  `anthropic` Messages-API provider was retired: the Claude.ai subscription does not
+  fund the Messages API and the org has no API credit, so it was a dead default.)
+- **Coding plane = Claude Agent SDK on the Claude subscription** (`USE_AGENT_CODING=1`
+  + `CODING_*` knobs). The SDK is never the reasoning backend (it shells out to a
+  `claude` subprocess per call — latency/concurrency overhead).
 
 Tiers stay `haiku/sonnet/opus`; cost is computed once in the runner from token usage ×
-tier pricing (the gateway may bill with a margin — treated as an estimate).
-
-**Reasoning-plane default = Messages API** (decided): it's the right tool for single-shot
-structured reasoning — faster, clean concurrency for fan-out, exact cost, portable. The
-**Claude Agent SDK** is *not* the reasoning default (it shells out to a `claude`
-subprocess per call — latency/concurrency overhead) but is (a) the **M4 engineering-pod**
-runtime and (b) an **optional reasoning provider** for running on a Claude subscription's
-monthly Agent SDK credit (`pip install -e .[agent-sdk]`, `MODEL_PROVIDER=claude_agent_sdk`
-— planned, not yet built). Note: the Claude.ai subscription does **not** fund the Messages
-API (§5) — that path needs API credits.
+tier pricing (the gateway may bill with a margin — treated as an estimate). Gateway
+caveats: prompt caching / effort / Batches are inert on this path, so the §10 levers that
+depend on them are aspirational until a provider that honors them returns.
 
 ---
 
@@ -214,7 +211,9 @@ Ordered stages (the HTML diagram is the canonical version once it exists):
 
 ### BugWorkflow (shorter)
 Triage → dedupe → (optional user-clarification signal w/ 7-day timeout) → PM
-prioritize → fix (Agent SDK) → review → QA → gated deploy.
+prioritize → **EngineeringPodWorkflow** (child — the bug as a one-story plan, so the
+same pod machinery applies: code → review loop → QA → PR → CI gate) → QA/CI gates →
+gated deploy. One pod, two entry points; there is no bespoke bug-fix path.
 
 ---
 
@@ -243,8 +242,9 @@ These are non-negotiable. If a task seems to require breaking one, stop and ask.
 4. **Human gates are signals with timeouts**, not blocking polls. Model every
    approval/clarification this way.
 5. **Bounded loops only** (§10). Every agent↔agent loop has an explicit cap.
-6. **Sandbox coding agents.** Engineering-pod agents run in isolated git worktrees /
-   containers, never against the target repo's `main` directly.
+6. **Sandbox coding agents.** Engineering-pod agents run in isolated per-run container
+   sandboxes (D9: a git worktree alone is NOT a sandbox), never against the target
+   repo's `main` directly.
 7. **Idempotent, retried activities.** Each activity has an explicit retry policy;
    auth-type errors are non-retryable, transient/rate-limit errors are retryable.
 8. **No project-specific knowledge in core code.** All of it lives in the Project
@@ -303,7 +303,7 @@ These are non-negotiable. If a task seems to require breaking one, stop and ask.
     /agents
       runner.py        # the single generic Agent Runner (provider-agnostic)
       provider.py      # the ModelProvider interface + ProviderResponse
-      providers/       # anthropic_provider, vercel_provider, factory (MODEL_PROVIDER)
+      providers/       # vercel_provider + factory (the only reasoning backend)
       registry/        # one file/config per persona (prompt + contract + tier)
       tools/           # tool implementations (policy lookup, repo ops, email, ...)
     /projects          # Project Profiles — one per target app (meal-planner, ...)
@@ -323,7 +323,7 @@ continue. M0 (infra), M1 (full skeleton on stubs), and M2 (agent runner + provid
 abstraction) are complete; M3 (swap stubs for live, eval-gated agents, cheapest-first) is
 complete — every reasoning persona on the feature and bug paths is real. M4 (execution-plane
 coding pod) is substantially complete: the pod is wired into Temporal behind `USE_AGENT_CODING`
-(agent-backed `implement_story`/`fix_bug`/`open_pr`), runs the Claude Agent SDK on the
+(agent-backed `implement_stories`/`open_pr`; bugs ride the same pod), runs the Claude Agent SDK on the
 subscription in a container sandbox, and was validated end-to-end — a dark-mode feature request
 drove brief→council→PRD↔architect→research→sign-off→stories→pod and opened a real GitHub PR.
 

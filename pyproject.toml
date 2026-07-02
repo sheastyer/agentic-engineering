@@ -2,21 +2,19 @@
 name = "agentic-org"
 version = "0.1.0"
 description = "A project-agnostic product/engineering organization built from autonomous agents, orchestrated with Temporal."
-requires-python = ">=3.10"
+requires-python = ">=3.11"  # StrEnum (see shared/types.py — temporalio converter safety)
 dependencies = [
     "temporalio>=1.28",
-    "anthropic>=0.109",
+    "pydantic>=2",
+    # The reasoning plane runs on the Vercel AI Gateway (its OpenAI-compatible endpoint),
+    # so the openai SDK is a core dependency — there is no alternate reasoning provider.
+    "openai>=1.40",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
-]
-# Bring-your-own provider: the Vercel AI Gateway provider talks to its OpenAI-compatible
-# endpoint via the openai SDK (lazy-imported, so anthropic-only users don't need it).
-vercel = [
-    "openai>=1.40",
 ]
 # Claude Agent SDK — the M4 engineering-pod runtime, and an optional reasoning provider
 # that runs on a Claude subscription's monthly Agent SDK credit (shells out to `claude`).

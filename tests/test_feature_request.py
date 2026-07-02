@@ -80,6 +80,36 @@ async def test_ci_failure_halts_before_deploy():
 
 
 @pytest.mark.asyncio
+async def test_qa_failure_halts_before_deploy():
+    # QA is a hard gate, symmetric with CI (2026-07-02): if the QA agent's final verdict on
+    # the pod's output is a fail (after the bounded QA→fix loop), the workflow halts at
+    # QA_FAILED and never reaches the deploy gate.
+    from temporalio import activity
+
+    from orchestrator.shared.types import QAResult
+
+    @activity.defn(name="qa_review")
+    async def qa_always_fail(project: str, story_results: list) -> QAResult:
+        return QAResult(passed=False, notes="(test) diff doesn't substantiate the claimed work")
+
+    async with await WorkflowEnvironment.start_local(dev_server_existing_path=TEMPORAL_CLI) as env:
+        async with await _start(env, activities_with({"qa_review": qa_always_fail})):
+            event = feature_event()
+            handle = await env.client.start_workflow(
+                FeatureRequestWorkflow.run, event, id=event.id, task_queue=TASK_QUEUE
+            )
+            await handle.signal(FeatureRequestWorkflow.submit_human_vote, args=[True, "tester"])
+            await wait_until(handle, lambda s: s.stage == "pm_signoff", GET_STATE)
+            await handle.signal(FeatureRequestWorkflow.submit_pm_signoff, "approve")
+            result = await handle.result()
+
+    assert result.status == Status.QA_FAILED
+    assert "qa_failed" in result.stage_log
+    assert "deploy" not in result.stage_log           # never merged past a red QA
+    assert "deploy_approval" not in result.stage_log  # halted before the deploy gate
+
+
+@pytest.mark.asyncio
 async def test_pr_not_opened_skips_ci_gate_and_halts():
     # Regression (2026-06-21): when open_pr fails (e.g. the diff didn't apply against the remote
     # base), there is no PR to wait on or fix. The pod must NOT call await_ci (which would poll a

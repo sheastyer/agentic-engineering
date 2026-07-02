@@ -122,7 +122,8 @@ feedback ─► triage ─► PM brief ─► exec-council vote (agents + human,
         ─► human deploy approval ─► shipped
 ```
 
-Bugs take a shorter triage → prioritize → fix → review → deploy path. Humans hold the
+Bugs take a shorter road to the same engineering pod: triage → prioritize → pod (code +
+review + QA) → CI → deploy. Humans hold the
 gates — council vote, sign-off, deploy approval — and everything in between is agents
 handing work to agents.
 
@@ -216,10 +217,10 @@ Get the org running against the built-in example, then point it at your own app.
 ```bash
 # install (Python ≥3.10)
 python3 -m venv .venv
-./.venv/bin/pip install -e ".[vercel]"      # the 'vercel' extra adds the Vercel AI Gateway provider
+./.venv/bin/pip install -e .
 
-# configure a model provider
-cp .env.example .env                        # set MODEL_PROVIDER + the matching key (see below)
+# configure the model provider (Vercel AI Gateway)
+cp .env.example .env                        # set AI_GATEWAY_API_KEY (see below)
 
 # start Temporal's local dev server and the org's worker
 temporal server start-dev --headless &      # the Temporal CLI: `brew install temporal`, or temporal.download
@@ -237,20 +238,21 @@ committed folder under [`runs/`](./runs) (`report.md`, `prd.md`, `trace.json`, `
 the `run-org` skill opens an **audit PR** with it — the org's durable record of each run,
 separate from the product PR on the target.
 
-**Choosing a model provider.** Set it in `.env`. The quickest path is the **Vercel AI
-Gateway** — `MODEL_PROVIDER=vercel` with an `AI_GATEWAY_API_KEY`. The alternative is
-Anthropic directly — `MODEL_PROVIDER=anthropic` with an `ANTHROPIC_API_KEY` (this path bills
-API credit, which a Claude.ai subscription does not cover). The model tiers, the provider
-abstraction, and the complete env reference are in
+**The model provider.** One per plane, by design: the **reasoning plane** runs on the
+**Vercel AI Gateway** (`AI_GATEWAY_API_KEY` in `.env`; `ORG_LIVE=1` on the worker turns every
+reasoning persona live, and the worker fails fast at startup without the key). The **coding
+plane** runs on the **Claude subscription** via the Agent SDK. The model tiers and the
+complete env reference are in
 [`docs/reference.md` → Model providers](./docs/reference.md#6-model-providers--bring-your-own-backend).
 
 **Turning on the real engineering pod.** By default the run is reasoning-only (the coding
 step is stubbed, `$0`). Set `USE_AGENT_CODING=1 CODING_AGENT=claude` and the pod runs the
 **Claude Agent SDK** to actually write the code, then opens a PR — `CODING_PR_TARGET=local`
 for a no-push dry run, or `github` to push the branch and `gh pr create`. It's bounded by
-construction (one story, hard per-attempt turn/budget caps). Driven end-to-end on 2026-06-19,
-a single *"add a dark mode toggle"* feedback opened a real
-[meal-planner PR](https://github.com/sheastyer/meal-planner/pull/3) for ~$0.34 of coding. The
+construction (one agent works the whole ordered story plan in one workspace, under hard
+per-attempt turn/budget caps). Driven end-to-end on 2026-06-19, a single *"add a dark mode
+toggle"* feedback opened a real, complete
+[meal-planner PR](https://github.com/sheastyer/meal-planner/pull/4) for ~$1.87 of coding. The
 coding env vars (and one gotcha about running it from inside a Claude Code session) are in
 [`docs/reference.md` → env vars](./docs/reference.md#6-model-providers--bring-your-own-backend).
 

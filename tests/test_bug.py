@@ -26,7 +26,9 @@ async def test_bug_ships_through_gated_deploy():
             result = await handle.result()
 
     assert result.status == Status.SHIPPED
-    assert "fix" in result.stage_log and "qa" in result.stage_log
+    # The fix rides the engineering pod (one pod, two entry points) and ships a real ref.
+    assert "engineering_pod" in result.stage_log
+    assert "pr" in result.summary or "branch" in result.summary or "agentic/" in result.summary
 
 
 @pytest.mark.asyncio
@@ -53,6 +55,34 @@ async def test_bug_clarification_signal_unblocks():
 
 
 @pytest.mark.asyncio
+async def test_bug_qa_failure_halts_before_deploy():
+    # The bug path rides the pod, so it inherits the same hard QA gate as features.
+    from temporalio import activity
+
+    from orchestrator.shared.types import QAResult
+
+    @activity.defn(name="qa_review")
+    async def qa_always_fail(project: str, story_results: list) -> QAResult:
+        return QAResult(passed=False, notes="(test) fix doesn't hold together")
+
+    async with await WorkflowEnvironment.start_local(dev_server_existing_path=TEMPORAL_CLI) as env:
+        async with Worker(
+            env.client, task_queue=TASK_QUEUE, workflows=ALL_WORKFLOWS,
+            activities=activities_with({"qa_review": qa_always_fail}),
+        ):
+            event = bug_event()
+            handle = await env.client.start_workflow(
+                BugWorkflow.run, event, id=event.id, task_queue=TASK_QUEUE
+            )
+            result = await handle.result()
+
+    assert result.status == Status.QA_FAILED
+    assert "qa_failed" in result.stage_log
+    assert "deploy" not in result.stage_log
+    assert "deploy_approval" not in result.stage_log
+
+
+@pytest.mark.asyncio
 async def test_bug_duplicate_closes_early():
     async with await WorkflowEnvironment.start_local(dev_server_existing_path=TEMPORAL_CLI) as env:
         activities = activities_with({"dedupe_check": mock.dedupe_is_duplicate})
@@ -66,4 +96,4 @@ async def test_bug_duplicate_closes_early():
             result = await handle.result()
 
     assert result.status == Status.CLOSED_DUPLICATE
-    assert "fix" not in result.stage_log
+    assert "engineering_pod" not in result.stage_log

@@ -10,7 +10,6 @@ from types import SimpleNamespace
 import pytest
 
 from orchestrator.agents.provider import ProviderResponse
-from orchestrator.agents.providers.anthropic_provider import AnthropicProvider
 from orchestrator.agents.providers.factory import build_provider
 from orchestrator.agents.providers.vercel_provider import VercelGatewayProvider
 from orchestrator.agents.registry import get_persona
@@ -167,39 +166,6 @@ def test_runner_bounded_reask_then_hard_fail():
     assert len(provider.calls) == 2  # triage max_reask=1 -> 2 attempts
 
 
-# --- anthropic provider --------------------------------------------------------
-def _usage(inp, out, cache=0):
-    return SimpleNamespace(input_tokens=inp, output_tokens=out, cache_read_input_tokens=cache)
-
-
-def test_anthropic_provider_sets_thinking_effort_for_reasoning_tiers_only():
-    parsed = TriageOutput(kind="feature", priority="P2", needs_clarification=False, rationale="r")
-
-    class FakeMessages:
-        def __init__(self):
-            self.calls = []
-
-        def parse(self, **kw):
-            self.calls.append(kw)
-            return SimpleNamespace(parsed_output=parsed, usage=_usage(10, 5))
-
-    fm = FakeMessages()
-    provider = AnthropicProvider(messages_client=fm)
-    msgs = [{"role": "user", "content": "x"}]
-
-    provider.generate_structured(tier="opus", system="s", messages=msgs,
-                                 output_model=TriageOutput, effort="high", max_tokens=100)
-    assert fm.calls[-1]["model"] == "claude-opus-4-8"
-    assert fm.calls[-1]["thinking"] == {"type": "adaptive"}
-    assert fm.calls[-1]["output_config"]["effort"] == "high"
-
-    provider.generate_structured(tier="haiku", system="s", messages=msgs,
-                                 output_model=TriageOutput, effort="low", max_tokens=100)
-    assert fm.calls[-1]["model"] == "claude-haiku-4-5"
-    assert "thinking" not in fm.calls[-1]
-    assert "output_config" not in fm.calls[-1]
-
-
 # --- vercel gateway provider ---------------------------------------------------
 def test_vercel_provider_builds_openai_request_and_validates_content():
     payload_json = TriageOutput(
@@ -321,9 +287,13 @@ def test_vercel_provider_still_returns_none_payload_on_genuine_garbage():
 
 
 # --- provider factory ----------------------------------------------------------
-def test_factory_selects_provider_and_rejects_unknown():
-    assert build_provider("anthropic").name == "anthropic"
+def test_factory_is_vercel_only_and_rejects_unknown():
+    # The reasoning plane is vercel-only (2026-07-02): default and explicit both resolve
+    # to the gateway; a retired provider name fails loudly instead of falling back.
+    assert build_provider().name == "vercel"
     assert build_provider("vercel").name == "vercel"
+    with pytest.raises(ValueError):
+        build_provider("anthropic")
     with pytest.raises(ValueError):
         build_provider("nope")
 
@@ -624,6 +594,27 @@ def test_review_diff_degrades_to_non_blocking_when_reviewer_cannot_parse():
     assert review.required_changes == []    # not a blind revise trigger
     assert "unavailable" in review.notes.lower()
     assert len(provider.calls) == 2         # code_reviewer max_reask=1 -> 2 attempts, then degrade
+
+
+def test_qa_review_fails_safe_when_qa_agent_cannot_parse():
+    """QA also runs AFTER the coding pass, so a parse failure must NOT raise (a live run died
+    this way 2026-07-02: qa_reviewer truncated on both re-asks → NonRetryableAgentError killed
+    the pod and orphaned a finished diff). Unlike the reviewer it degrades to a FAIL-SAFE
+    verdict — passed=False — because QA is a hard gate (Status.QA_FAILED): the run halts before
+    deploy with the diff preserved in a PR, instead of silently waving un-QA'd work through."""
+    from orchestrator.activities.agent_backed import qa_review_with_runner
+    from orchestrator.shared.types import QAResult, StoryResult
+
+    provider = _FakeProvider(payload=None, in_tok=100, out_tok=10)  # never parses -> runner raises
+    result = StoryResult(story_id="feat-x", status="done", pr_ref="", summary="did it",
+                         diff="diff --git a/a.ts b/a.ts\n+const a = 1\n")
+
+    qa = qa_review_with_runner(provider, "meal-planner", [result])
+
+    assert isinstance(qa, QAResult)
+    assert qa.passed is False               # fail-safe: halt at the QA gate, never a silent pass
+    assert "unavailable" in qa.notes.lower()
+    assert len(provider.calls) == 2         # qa_reviewer max_reask=1 -> 2 attempts, then degrade
 
 
 def test_qa_review_weighs_diff_and_status_not_just_the_developer_summary():

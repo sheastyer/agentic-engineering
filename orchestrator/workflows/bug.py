@@ -1,10 +1,17 @@
 """BugWorkflow — the shorter path (CLAUDE.md §7).
 
 triage -> dedupe -> (optional user-clarification signal w/ 7-day timeout) -> PM
-prioritize -> fix (Agent SDK, stubbed) -> review -> QA -> gated deploy.
+prioritize -> engineering pod (child) -> gated deploy.
+
+The fix itself rides the SAME EngineeringPodWorkflow the feature path uses — one pod,
+two entry points. The bug becomes a one-story plan, so the pod's whole machinery comes
+for free: real coding in a sandboxed workspace, the bounded code-review ↔ revise loop,
+functional QA, open_pr, the bounded CI gate ↔ fix loop, and an idempotent merge on the
+deploy gate. (The old bespoke fix/review_fix stages produced a diff that died inside the
+activity — no PR, an empty deploy ref — and their verdicts were never even read.)
 
 Same invariants as the feature workflow: deterministic orchestration only, human gates
-are signals with timeouts, deploy is gated.
+are signals with timeouts, deploy is gated, the org never merges past a red PR.
 """
 
 from datetime import timedelta
@@ -19,20 +26,18 @@ with workflow.unsafe.imports_passed_through():
         BUDGET_OVERRIDE_TIMEOUT_DAYS,
         BUDGET_USD,
         CLARIFICATION_TIMEOUT_DAYS,
-        CODING_ACTIVITY_TIMEOUT_MINUTES,
         DEPLOY_TIMEOUT_DAYS,
     )
     from orchestrator.shared.types import (
         FeedbackEvent,
         Status,
+        Story,
+        StoryPlan,
         WorkflowResult,
         WorkflowState,
     )
     from orchestrator.workflows.common import run_activity
-
-# The fix step runs a real coding agent (agent-backed fix_bug) — minutes, not the 30s
-# reasoning default. Deterministic (a constant timedelta).
-_CODING_TIMEOUT = timedelta(minutes=CODING_ACTIVITY_TIMEOUT_MINUTES)
+    from orchestrator.workflows.engineering_pod import EngineeringPodWorkflow
 
 
 class _BudgetHalt(Exception):
@@ -101,9 +106,51 @@ class BugWorkflow:
                 self._log.append("clarification timed out; proceeding with original report")
 
         await self._act(act.pm_prioritize_bug, event, triage, stage="pm_prioritize")
-        fix = await self._act(act.fix_bug, event, stage="fix", timeout=_CODING_TIMEOUT)
-        await self._act(act.review_fix, fix, stage="review")
-        await self._act(act.qa_review, event.project, [fix], stage="qa")
+
+        # Engineering pod (child) — the bug as a one-story plan. The clarification (when we
+        # got one) rides along in the context so the coding agent sees the reporter's answer.
+        context = event.body
+        if self._clarification:
+            context += f"\n\nReporter's clarification: {self._clarification}"
+        plan = StoryPlan(
+            feature_id=f"bugfix-{event.id}",
+            stories=[
+                Story(
+                    id=f"bugfix-{event.id}-S1",
+                    title=f"Fix this bug: {event.title}",
+                    estimate=2,
+                    tier="sonnet",
+                )
+            ],
+            project=event.project,
+            context=context,
+        )
+        self._enter("engineering_pod")
+        pod = await workflow.execute_child_workflow(
+            EngineeringPodWorkflow.run,
+            plan,
+            id=f"{workflow.info().workflow_id}-pod",
+        )
+        self._cost += pod.cost_tokens
+        self._cost_usd += pod.cost_usd
+        await self._check_budget()
+
+        # QA gate (hard, symmetric with the feature path): halt before deploy on a red QA
+        # verdict. ("Tests unavailable in sandbox" is not a fail — the profile declares that.)
+        if not pod.qa.passed:
+            self._status = Status.QA_FAILED
+            self._enter("qa_failed")
+            return self._result(
+                event, f"QA failed on the pod's output; halted before deploy. {pod.qa.notes}"
+            )
+
+        # CI gate (hard, §9.2): never surface a red PR to the deploy gate, let alone merge it.
+        if not pod.ci_passed:
+            self._status = Status.CI_FAILED
+            self._enter("ci_failed")
+            return self._result(
+                event, f"CI failed on the PR ({pod.pr_url}); halted before deploy. {pod.ci_notes}"
+            )
 
         # Deploy approval gate
         self._enter("deploy_approval")
@@ -120,9 +167,9 @@ class BugWorkflow:
             self._status = Status.HELD
             return self._result(event, "Human held the deploy.")
 
-        await self._act(act.deploy, event.project, fix.pr_ref, stage="deploy")
+        await self._act(act.deploy, event.project, pod.branch, stage="deploy")
         self._status = Status.SHIPPED
-        return self._result(event, f"Bug fix shipped ({fix.pr_ref}).")
+        return self._result(event, f"Bug fix shipped ({pod.pr_url or pod.branch}).")
 
     # --- helpers ---------------------------------------------------------------
     async def _check_budget(self) -> None:

@@ -17,7 +17,7 @@ If you only remember one thing: **two planes.**
 - **Execution plane** — the agents that actually reason or write code. Short-lived,
   intense, called *from inside* the orchestration plane. The reasoning personas run
   through the **Agent Runner**; the coding pod runs the **Claude Agent SDK** in sandboxed
-  git worktrees.
+  container sandboxes.
 
 Keeping these apart is the whole game. Workflow code is pure, deterministic orchestration
 — **no LLM calls, no I/O, no clocks, no randomness.** Anything non-deterministic lives in
@@ -87,11 +87,14 @@ A visual of this flow lives in
 
 ```
 triage → dedupe → (optional 🧑 user-clarification, 7-day timeout)
-       → PM prioritize → fix → review → QA → 🧑 deploy approval → shipped
+       → PM prioritize → engineering pod (child: code → review loop → QA → PR → CI)
+       → QA/CI gates → 🧑 deploy approval → shipped
 ```
 
-Its reasoning personas are `triage` and `pm_prioritize_bug` (both Haiku); `fix`, `review`,
-and `qa` run on the engineering pod's coding agents (§4).
+Its reasoning personas are `triage` and `pm_prioritize_bug` (both Haiku). The fix itself
+rides the **same `EngineeringPodWorkflow` the feature path uses** — the bug becomes a
+one-story plan (the report body travels as context), so bugs get the pod's code-review
+loop, functional QA, a real PR, and the CI gate with no bespoke bug-fix path.
 
 ---
 
@@ -173,7 +176,7 @@ For a reasoning persona, the activity is a thin bridge: it loads the Project Pro
 up the persona in the registry, calls the **Agent Runner**, and adapts the runner's typed
 contract instance into the workflow's data type — carrying the real dollar cost back with
 it. The engineering-pod activities are the exception: instead of a single model call they
-run a **coding agent** (the Claude Agent SDK) in a sandboxed git worktree to implement a
+run a **coding agent** (the Claude Agent SDK) in a sandboxed per-run workspace to implement a
 story (§4).
 
 Two properties, both Temporal-provided, are why this is the right boundary:
@@ -196,30 +199,31 @@ def generate_structured(*, tier, system, messages, output_model, effort, max_tok
     -> ProviderResponse   # validated payload + raw token usage + model id
 ```
 
-So the backend is a swap, not a rewrite. Two ship today, selected by the `MODEL_PROVIDER`
-env var:
+So the backend stays testable with `$0` fakes — but the org deliberately ships **one
+provider per plane** (decided 2026-07-02; the earlier anthropic/vercel matrix is retired):
 
-- **`anthropic`** (default) — the Anthropic Messages SDK with native structured outputs.
-  Credentials resolve to a Claude subscription (OAuth profile) **or** a direct API key.
-- **`vercel`** — the Vercel AI Gateway via its OpenAI-compatible endpoint
-  (`AI_GATEWAY_API_KEY`). Tiers map to gateway-namespaced model ids.
+- **Reasoning plane → `vercel`, only** — the Vercel AI Gateway via its OpenAI-compatible
+  endpoint (`AI_GATEWAY_API_KEY`). Tiers map to gateway-namespaced model ids. `ORG_LIVE=1`
+  turns every reasoning persona live; the worker fails fast at startup without the key.
+- **Coding plane → the Claude Agent SDK** on the Claude **subscription**
+  (`USE_AGENT_CODING=1` + the `CODING_*` knobs below).
 
-The three tiers are constant across providers, with pricing pinned in `config.PRICING`:
+The three tiers are constant, with pricing pinned in `config.PRICING`:
 
 | Tier | Model id | $/1M in | $/1M out |
 |---|---|---|---|
 | `haiku` | `claude-haiku-4-5` | $1 | $5 |
-| `sonnet` | `claude-sonnet-4-6` | $3 | $15 |
+| `sonnet` | `claude-sonnet-5` | $3 | $15 |
 | `opus` | `claude-opus-4-8` | $5 | $25 |
 
 **Cost is computed in exactly one place** — the runner, from real token usage × tier
 pricing (cache reads bill at ~0.1× input). Each activity returns its dollar cost; the
 workflow accumulates it and trips a **human budget-override gate** when the per-workflow
-ceiling is crossed (`BUDGET_USD`: $3 for a feature, $0.50 for a bug — deliberately lean,
-so real coding work forces a human to look).
+ceiling is crossed (`BUDGET_USD`: $3 for a feature, $2.50 for a bug — bugs ride the real
+coding pod too, so their ceiling is sized against a coding pass).
 
-> Billing note: the Claude.ai **subscription does not fund the Anthropic Messages API** —
-> that path needs API credit. The Vercel gateway is the already-working alternative. See
+> Billing note: the Claude.ai **subscription does not fund the Anthropic Messages API**,
+> which is why the retired `anthropic` reasoning provider was a dead default. See
 > [`PLAN.md`](../PLAN.md) for the gory details.
 
 ### The env vars, in one place
@@ -228,10 +232,9 @@ All of these are set in `.env` (copy `.env.example`).
 
 | Variable | When | Purpose |
 |---|---|---|
-| `MODEL_PROVIDER` | always | `anthropic` (default) or `vercel` — picks the backend. |
-| `ANTHROPIC_API_KEY` | `anthropic` provider | Direct API key (pay-as-you-go). Unset = use the Claude subscription OAuth profile — which **does not** fund the Messages API, so a key/credit is needed in practice. |
-| `AI_GATEWAY_API_KEY` | `vercel` provider | Vercel AI Gateway key. (`VERCEL_OIDC_TOKEN` is an alternative.) |
-| `USE_AGENT_*` | optional | Swap a stubbed stage for its live agent — `_TRIAGE _BRIEF _COUNCIL _PRD_AUTHOR _ARCH_REVIEW _PRD_REVISE _RESEARCH _STORY_PLAN _BUG_PRIORITY _REVIEW _QA`, plus `USE_AGENT_CODING` for the engineering pod. Unset = `$0` stubs. |
+| `AI_GATEWAY_API_KEY` | live reasoning | Vercel AI Gateway key. (`VERCEL_OIDC_TOKEN` is an alternative.) |
+| `ORG_LIVE` | optional | `1` = every reasoning persona runs live on the gateway. Unset = `$0` stubs. (Replaced the per-persona `USE_AGENT_*` flags, which were M3 scaffolding.) |
+| `USE_AGENT_CODING` | optional | `1` = the engineering pod runs a real coding agent (both paths — features and bugs ride the same pod). Unset = `$0` stub coding. |
 | `CODING_AGENT` | with `USE_AGENT_CODING` | `mock` (default, `$0`) or `claude` — the Claude Agent SDK, which draws on the Claude **subscription** (no `ANTHROPIC_API_KEY`). |
 | `CODING_SANDBOX` | with `USE_AGENT_CODING` | `local` (default) or `container` — where the target's *test command* runs (Docker, for untrusted repo code). |
 | `CODING_PR_TARGET` | with `USE_AGENT_CODING` | `local` (default — clone/apply/commit a dry-run branch, **no push**) or `github` — push the branch + `gh pr create`. |

@@ -181,7 +181,18 @@ class FeatureRequestWorkflow:
         self._cost_usd += pod.cost_usd
         await self._check_budget()
 
-        # 8a. CI gate: the org must not progress past code review to merge while the PR's CI is
+        # 8a. QA gate (hard, symmetric with CI): the QA agent's final verdict on the pod's
+        # output. The pod already ran its bounded QA→fix loop; if the verdict is still a fail,
+        # halt before the deploy gate — an unattended-ish merge must not ride on a red QA.
+        # ("Tests unavailable in sandbox" is NOT a fail — the profile declares that honestly.)
+        if not pod.qa.passed:
+            self._status = Status.QA_FAILED
+            self._enter("qa_failed")
+            return self._result(
+                event, f"QA failed on the pod's output; halted before deploy. {pod.qa.notes}"
+            )
+
+        # 8b. CI gate: the org must not progress past code review to merge while the PR's CI is
         # red. The pod already ran a bounded CI fix loop; if CI is still failing, halt before the
         # deploy gate (a human must intervene) — never auto-merge a red PR (§9.2).
         if not pod.ci_passed:

@@ -6,10 +6,14 @@ data. Adding a new project = writing a new profile, never editing the org. Profi
 """
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
+
+# StrEnum, not (str, Enum) — same temporalio-converter rationale as shared/types.py:
+# a (str, Enum) type hint decodes as a char list if the value ever crosses an
+# activity boundary. Profiles are loaded locally today, but keep the enums safe.
 
 
-class IntakeKind(str, Enum):
+class IntakeKind(StrEnum):
     """How feedback enters the org for this project (the M5 intake adapter implements it)."""
 
     DB_TABLE = "db_table"
@@ -19,7 +23,7 @@ class IntakeKind(str, Enum):
     MANUAL = "manual"
 
 
-class DeployKind(str, Enum):
+class DeployKind(StrEnum):
     """What 'deploy' concretely means for this project (always behind a human gate, §9.2)."""
 
     OPEN_PR = "open_pr"
@@ -41,6 +45,12 @@ class Stack:
     package_manager: str
     test_command: str
     build_command: str = ""
+    # Can `test_command` actually run inside the org's coding sandbox? False for targets
+    # whose suite needs things the sandbox denies (network installs, browsers, a DB) — the
+    # pod then reports QA "unavailable" (honest) instead of "failed" (misleading), and the
+    # PR's CI is the objective gate. This knob living HERE (not org config) is deliberate:
+    # it's per-target knowledge (§3).
+    sandbox_tests: bool = True
 
 
 @dataclass

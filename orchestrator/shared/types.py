@@ -7,15 +7,19 @@ return small canned values and real agents (M3+) will return measured token coun
 """
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
+
+# StrEnum, NOT (str, Enum): temporalio 1.28's JSON converter mis-decodes a `(str, Enum)`
+# type hint as a list of characters (kind: "bug" -> ['b','u','g']; reproduced on Python
+# 3.14, killed a live bug run 2026-07-02 at pm_prioritize). StrEnum round-trips correctly.
 
 
-class FeedbackKind(str, Enum):
+class FeedbackKind(StrEnum):
     BUG = "bug"
     FEATURE = "feature"
 
 
-class Status(str, Enum):
+class Status(StrEnum):
     """Terminal (and a couple of in-flight) workflow states."""
 
     RUNNING = "running"
@@ -26,6 +30,7 @@ class Status(str, Enum):
     ESCALATED = "escalated"      # a human gate timed out
     OVER_BUDGET = "over_budget"  # budget ceiling hit and the override was declined/timed out
     CI_FAILED = "ci_failed"      # the PR's CI was still red after the bounded fix loop; halted before merge
+    QA_FAILED = "qa_failed"      # the QA agent failed the pod's output after the bounded fix loop; halted before deploy (symmetric with CI_FAILED)
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +150,8 @@ class StoryPlan:
     stories: list[Story]
     project: str = ""           # Project Profile id, carried so the pod can load the target repo
     complexity: str = ""        # architect's whole-feature scope read (small|medium|large); bounds story count
+    context: str = ""           # extra background handed verbatim to the coding agent (e.g. the
+                                # bug report body on the bug path); untrusted text, quoted in the prompt
     cost_tokens: int = 0
     cost_usd: float = 0.0
 
@@ -156,6 +163,8 @@ class StoryResult:
     pr_ref: str
     diff: str = ""              # unified diff the pod produced (assembled into the PR)
     summary: str = ""           # short note on what the coding attempt did
+    build_status: str = ""      # honest in-sandbox verdict fed to the QA agent: "passed: …" |
+                                # "failed: …" | "unavailable: …" (tests can't run there — not a failure)
     tier: str = ""              # coding-model tier that actually ran this attempt (traced so the
                                 # audit shows which model tackled the work); "" for stub/non-agent
     cost_tokens: int = 0

@@ -248,7 +248,11 @@ REGISTRY: dict[str, Persona] = {
         system_template=_ARCHITECT_REVIEW_PROMPT,
         output_model=contracts.ArchitectReviewOutput,
         effort="high",
-        max_tokens=3072,  # a list of concerns; headroom for a thorough review
+        # 12000, not 3072: on the small-feature Sonnet downgrade this call hits the same
+        # gateway forced-thinking budget-share as the reviewers (one truncation observed
+        # live 2026-07-02, recovered only by the bounded re-ask). Concern lists plus
+        # thinking need the headroom; the wider ceiling's cost is negligible.
+        max_tokens=12000,
     ),
     "architect_plan_stories": Persona(
         name="architect_plan_stories",
@@ -283,7 +287,11 @@ REGISTRY: dict[str, Persona] = {
         system_template=_QA_REVIEW_PROMPT,
         output_model=contracts.QAReviewOutput,
         effort="high",
-        max_tokens=1024,  # a verdict + a short note
+        # 16000, not 1024: same gateway reality as code_reviewer above — Sonnet triggers
+        # extended thinking regardless, sharing this visible-completion budget. 1024
+        # truncated mid-JSON on BOTH bounded re-asks in a live run (2026-07-02), raising
+        # NonRetryableAgentError AFTER the expensive coding pass and killing the workflow.
+        max_tokens=16000,
     ),
 }
 

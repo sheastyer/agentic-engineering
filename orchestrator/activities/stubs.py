@@ -254,19 +254,9 @@ async def pm_prioritize_bug(event: FeedbackEvent, triage: Triage) -> BugPriority
     return BugPriority(priority=triage.priority, rationale="(stub) prioritized", cost_tokens=80)
 
 
-@activity.defn
-async def fix_bug(event: FeedbackEvent) -> StoryResult:
-    return StoryResult(
-        story_id=f"bugfix-{event.id}",
-        status="done",
-        pr_ref=f"pr://bugfix-{event.id}",
-        cost_tokens=700,
-    )
-
-
-@activity.defn
-async def review_fix(fix: StoryResult) -> ReviewResult:
-    return ReviewResult(approved=fix.status == "done", notes="(stub) LGTM", cost_tokens=120)
+# (fix_bug / review_fix are gone: the bug path now rides the same EngineeringPodWorkflow
+# as features — one pod, two entry points — so the pod's implement/review/QA/PR/CI
+# machinery covers bugs too.)
 
 
 # Registered with the worker. Adding an activity = appending here.
@@ -292,6 +282,4 @@ ALL_ACTIVITIES = [
     triage_feedback,
     dedupe_check,
     pm_prioritize_bug,
-    fix_bug,
-    review_fix,
 ]

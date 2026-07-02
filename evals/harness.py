@@ -8,7 +8,7 @@ Runs a persona over a case set and reports the decision-free signals:
 The subjective quality dimension (LLM-as-judge, pass-rate thresholds) is intentionally a
 **pluggable hook** (`QualityScorer`) left unimplemented until decision D5 sets the bar and
 judge approach. The harness is provider-agnostic: pass a mock provider for $0 plumbing,
-or a real one (anthropic/vercel) for a live run.
+or the real one (vercel) for a live run.
 """
 
 from __future__ import annotations

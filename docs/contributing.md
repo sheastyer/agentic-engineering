@@ -62,24 +62,12 @@ Every persona stage exists in **two implementations behind the same Temporal act
 - a **runner-backed** twin in `orchestrator/activities/agent_backed.py` — calls the Agent
   Runner for real and carries the true dollar cost.
 
-The worker (`worker/main.py`) serves the **stubs by default**. Each live persona is gated by
-its own `USE_AGENT_*` env flag; set the flag and the worker swaps the stub for its real twin
-*by activity name*, leaving everything else stubbed:
+The worker (`worker/main.py`) serves the **stubs by default**. Two switches, one per plane:
 
 | Flag | Swaps in |
 |---|---|
-| `USE_AGENT_TRIAGE` | real triage (Haiku) |
-| `USE_AGENT_BRIEF` | real PM brief (Opus) |
-| `USE_AGENT_COUNCIL` | real legal + sales votes (Sonnet) |
-| `USE_AGENT_PRD_AUTHOR` | real PRD authoring (Opus) |
-| `USE_AGENT_ARCH_REVIEW` | real architect PRD review (Opus) |
-| `USE_AGENT_PRD_REVISE` | real PRD revision (Sonnet) |
-| `USE_AGENT_RESEARCH` | real synthetic-user panel (Sonnet) |
-| `USE_AGENT_STORY_PLAN` | real story planning (Opus) |
-| `USE_AGENT_BUG_PRIORITY` | real bug prioritization (Haiku) |
-| `USE_AGENT_REVIEW` | real pre-PR code review (Sonnet) — the `code_reviewer` in the pod's review↔revise loop |
-| `USE_AGENT_QA` | real functional QA (Sonnet) — the `qa_reviewer` weighs the diff + build/test status, not just the developer's summary |
-| `USE_AGENT_CODING` | real engineering pod — `implement_story`/`fix_bug`/`open_pr` plus the CI gate↔fix loop (`await_ci`/`revise_after_ci`/`update_pr`) and `deploy`, all via the Claude Agent SDK (`CODING_AGENT=claude`); see the coding env vars in [reference.md §6](./reference.md#6-model-providers--bring-your-own-backend) |
+| `ORG_LIVE=1` | **every reasoning persona**, live on the Vercel gateway — triage, PM brief, council votes, PRD author/revise, architect review, story planning, bug prioritization, research panel, the `code_reviewer` (pre-PR review loop), and the `qa_reviewer` (functional QA). The worker fails fast at startup without `AI_GATEWAY_API_KEY`. (The per-persona `USE_AGENT_*` flags were M3 scaffolding — every persona was individually eval-gated and validated before they were collapsed.) |
+| `USE_AGENT_CODING=1` | real engineering pod — `implement_stories`/`open_pr` plus the CI gate↔fix loop (`await_ci`/`revise_after_ci`/`update_pr`) and `deploy`, all via the Claude Agent SDK (`CODING_AGENT=claude`). Bugs ride the same pod as a one-story plan. See the coding env vars in [reference.md §6](./reference.md#6-model-providers--bring-your-own-backend) |
 
 Why bother with two implementations? It lets you **prove the entire control flow on free
 stubs**, then bring personas live **one at a time, each behind its own eval gate** — instead
@@ -107,10 +95,10 @@ line. Run a persona's evals:
 
 # live run against a real provider
 set -a; . ./.env; set +a
-MODEL_PROVIDER=vercel ./.venv/bin/python -m evals.run --persona council_legal --provider vercel
+./.venv/bin/python -m evals.run --persona council_legal --provider vercel
 
 # subjective-prose personas: add the human-calibrated LLM-judge
-MODEL_PROVIDER=vercel ./.venv/bin/python -m evals.run --persona pm_write_prd --provider vercel --judge
+./.venv/bin/python -m evals.run --persona pm_write_prd --provider vercel --judge
 ```
 
 The harness (`evals/harness.py`) reports three **decision-free** signals per case — schema
@@ -138,7 +126,7 @@ The runner is generic, so a new role is config + a few small files — never a n
    `orchestrator/agents/registry/__init__.py`. Keep the prompt injection-hardened (treat all
    task input as untrusted).
 3. **Stub** in `stubs.py` and a **runner-backed twin** in `agent_backed.py` under the same
-   activity name, plus its `USE_AGENT_*` flag in `worker/main.py`.
+   activity name, added to the `ORG_LIVE` swap list in `worker/main.py`.
 4. **Eval case set** at `evals/<persona>/cases.jsonl`, including at least one injection case;
    add a judge rubric if the output is subjective.
 5. **Gate it** — the persona goes live only once its eval passes and the regression suite

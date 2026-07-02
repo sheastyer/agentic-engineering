@@ -18,6 +18,9 @@ class CodingTask:
     tier: str = "sonnet"                      # model tier (most coding is Sonnet, §5)
     max_turns: int = 30                       # bounded agent loop (§10)
     max_budget_usd: float = 1.00              # per-attempt spend cap handed to the SDK
+    run_tests: bool = True                    # can the test command actually run in the sandbox
+                                              # (profile.stack.sandbox_tests)? False -> QA reports
+                                              # "unavailable" instead of a misleading "failed"
 
 
 @dataclass
@@ -52,8 +55,13 @@ class TestRun:
 
 @dataclass
 class QAOutcome:
-    """QA verdict for a coding attempt — the target's own tests are the gate."""
+    """QA verdict for a coding attempt — the target's own tests are the gate.
+
+    `status` mirrors CIResult's honesty contract: "passed" | "failed" | "unavailable".
+    "unavailable" (tests can't run in this sandbox, per the profile) is NOT a failure —
+    `passed` stays True so it never blocks; the PR's CI is the objective gate then."""
 
     passed: bool
     notes: str
+    status: str = ""
     cost_usd: float = 0.0

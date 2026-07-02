@@ -32,6 +32,9 @@ PROFILE = ProjectProfile(
         package_manager="npm",
         test_command="npm test",
         build_command="npm run build",
+        # The suite needs npm install + a browser; the offline coding sandbox can't run it,
+        # so in-sandbox QA reports "unavailable" and the PR's GitHub CI is the real gate.
+        sandbox_tests=False,
     ),
     # Placeholders until M5 — meal-planner uses Next.js + Drizzle/Postgres, so feedback
     # will most likely surface as a DB table the intake adapter polls.

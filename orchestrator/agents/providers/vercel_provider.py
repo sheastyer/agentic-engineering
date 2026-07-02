@@ -23,11 +23,11 @@ failure is diagnosable instead of a silent None.
 `strict: true` is deliberately opt-in per contract (`_STRICT_MODE_CONTRACTS`), not applied
 to every persona: whether an *arbitrary* contract/model combination would tolerate strict
 mode was unverified from here (no live gateway access in this codebase's test/dev setup) —
-scoping it to just the one contract known to need it means every other persona's request
-stays exactly as it was before this hardening, so this change cannot make an
-already-working persona worse. `strict: true` itself IS now live-verified against the real
-gateway (2026-06-30) for `code_reviewer`/`CodeReviewOutput` specifically: the gateway
-accepts it and, once a response completes, the JSON is clean (no fence/prose drift).
+scoping it to the contracts with an observed live failure means every other persona's
+request stays exactly as it was before this hardening, so this change cannot make an
+already-working persona worse. `strict: true` itself IS live-verified against the real
+gateway (2026-06-30) for `code_reviewer`/`CodeReviewOutput`: the gateway accepts it and,
+once a response completes, the JSON is clean (no fence/prose drift).
 
 Caveats (documented, not silently assumed): `effort` (Anthropic adaptive-thinking) is not
 forwarded here — but live testing shows the underlying Sonnet call triggers extended
@@ -49,15 +49,22 @@ from typing import Any
 from pydantic import BaseModel
 
 from orchestrator.agents.provider import ProviderResponse, usage_int
-from orchestrator.agents.registry.contracts import CodeReviewOutput
+from orchestrator.agents.registry.contracts import (
+    ArchitectReviewOutput,
+    CodeReviewOutput,
+    QAReviewOutput,
+)
 from orchestrator.shared.config import VERCEL_GATEWAY_BASE_URL, VERCEL_MODELS
 from orchestrator.shared.errors import AuthError
 
 _log = logging.getLogger(__name__)
 
 # Contracts that opt into `strict: true` grammar-constrained decoding — see the module
-# docstring for why this isn't every contract.
-_STRICT_MODE_CONTRACTS = {CodeReviewOutput}
+# docstring for why this isn't every contract. Membership is earned by an observed live
+# parse failure on the gateway: CodeReviewOutput (2026-06-30, systematic), then
+# QAReviewOutput and ArchitectReviewOutput (2026-07-02 — QA truncated on both re-asks and
+# killed a run after the coding pass; the architect drifted once on the Sonnet downgrade).
+_STRICT_MODE_CONTRACTS = {ArchitectReviewOutput, CodeReviewOutput, QAReviewOutput}
 
 # Prefer an explicitly `json`-tagged fence so an illustrative code fence elsewhere in the
 # response (plausible here — the input is a diff full of braces) doesn't get grabbed

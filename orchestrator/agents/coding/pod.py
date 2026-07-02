@@ -15,11 +15,25 @@ from orchestrator.agents.coding.types import CodingOutcome, CodingTask, QAOutcom
 from orchestrator.agents.coding.workspace import Workspace
 
 
-def run_qa(workspace: Workspace) -> QAOutcome:
-    """QA gate = the target repo's own test command. Pass == exit 0 (no false greens)."""
+def run_qa(workspace: Workspace, *, runnable: bool = True) -> QAOutcome:
+    """QA gate = the target repo's own test command. Pass == exit 0 (no false greens).
+
+    `runnable=False` (profile.stack.sandbox_tests): the target's suite genuinely cannot run
+    in this sandbox (e.g. an offline container that can't npm-install), so don't run it and
+    report an honest "unavailable" — a misleading "failed" here poisoned every downstream
+    verdict (the QA agent read it as a broken build). CI on the PR is the objective gate."""
+    if not runnable:
+        return QAOutcome(
+            passed=True,
+            status="unavailable",
+            notes=(
+                "target tests are not runnable in the sandbox (per the project profile); "
+                "the PR's CI is the objective gate"
+            ),
+        )
     run = workspace.run_tests()
     note = "all target tests passed" if run.passed else f"target tests failed (exit {run.returncode})"
-    return QAOutcome(passed=run.passed, notes=note)
+    return QAOutcome(passed=run.passed, status="passed" if run.passed else "failed", notes=note)
 
 
 async def implement_and_verify(
@@ -40,5 +54,5 @@ async def implement_and_verify(
         source, test_command=task.test_command, from_git=from_git, sandbox=sandbox
     ) as ws:
         outcome = await agent.implement(task, ws)
-        qa = run_qa(ws)
+        qa = run_qa(ws, runnable=task.run_tests)
     return outcome, qa
