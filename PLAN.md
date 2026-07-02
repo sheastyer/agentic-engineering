@@ -128,6 +128,24 @@ activity in the histories. Remaining for the M5 human-I/O exit: the `MAN` round-
 the Slack app: Socket Mode on, `chat:write`, interactivity; fill `SLACK_*` in `.env`) and a
 live steel-thread run with the deploy gate approved by a real click.
 
+**Update (2026-07-02) — per-run Slack progress thread:** Slack is now the org's primary
+observability surface, not just its gate transport. Each run posts a **thread** in the
+channel: root = 📥 the feedback the moment the workflow starts; replies = 📝 PM brief,
+🏛️ council decision (votes + rationale), 📄 **the full PRD as an attached PDF** (re-posted
+per revision), 🎨 mocks ref, 🔬 **consumer research synthesized to PDF** (per-persona
+findings), 🧱 story plan (tiers), 🤖 engineering-pod verdicts (PR/QA/review/CI), 🏁
+terminal status + total cost. Bugs: root → 🩺 triage → 🤖 pod → 🏁. Mechanism: a second
+advisory `notify_progress` activity (stub $0 / live twin under the same `ORG_SLACK=1`);
+the first post's `ts` anchors the thread (stored deterministically from the activity
+result) and threads every later progress post AND gate message — gates post in-thread
+with `reply_broadcast` so approvals stay visible at channel level. PDF rendering is
+pure-Python (`fpdf2`+`markdown` in the `[slack]` extra, lazy; latin-1 transliteration —
+typography is the v1 trade-off), degrading to a raw-markdown upload, then to post-only —
+an artifact can never kill a run. Slack scopes now `chat:write` **+ `files:write`**.
+Workflow shape changed again (R6: drained, local dev). **159 tests green.** Known gap:
+no in-thread progress *during* the ~10–15 min coding pod (child workflow doesn't know
+the thread) — pod-internal progress is a possible follow-up.
+
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`
   & `EngineeringPod` children. All stages currently call **stub** activities

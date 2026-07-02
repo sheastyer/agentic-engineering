@@ -31,6 +31,7 @@ with workflow.unsafe.imports_passed_through():
     from orchestrator.shared.types import (
         FeedbackEvent,
         GateNotice,
+        ProgressNotice,
         Status,
         Story,
         StoryPlan,
@@ -58,6 +59,7 @@ class BugWorkflow:
         self._title = ""
         self._project = ""
         self._gate_context: list[str] = []
+        self._thread_ts = ""    # the run's Slack thread anchor (set by the first progress post)
         self._clarification: str | None = None
         self._deploy_approved: bool | None = None
         self._deploy_approver = "unknown"
@@ -94,19 +96,38 @@ class BugWorkflow:
     @workflow.run
     async def run(self, event: FeedbackEvent) -> WorkflowResult:
         try:
-            return await self._execute(event)
+            result = await self._execute(event)
         except _BudgetHalt:
-            return self._result(event, f"Halted at budget gate (${self._cost_usd:.4f}).")
+            result = self._result(event, f"Halted at budget gate (${self._cost_usd:.4f}).")
+        # One terminal post covers every exit path (shipped/duplicate/held/over-budget/...).
+        await self._notify_progress(
+            "done",
+            [f"status: {result.status}", clip(result.summary), f"total cost: ${result.cost_usd:.4f}"],
+        )
+        return result
 
     async def _execute(self, event: FeedbackEvent) -> WorkflowResult:
         self._title = event.title
         self._project = event.project
+
+        # Root of the run's Slack thread: the bug report itself, the moment work starts.
+        await self._notify_progress(
+            "feedback_received",
+            [f"kind: {event.kind}", f"from: {event.submitted_by}", clip(event.body)],
+        )
 
         triage = await self._act(act.triage_feedback, event, stage="triage")
         dedupe = await self._act(act.dedupe_check, event, stage="dedupe")
         if dedupe.is_duplicate:
             self._status = Status.CLOSED_DUPLICATE
             return self._result(event, f"Duplicate of {dedupe.duplicate_of}.")
+        await self._notify_progress(
+            "triage",
+            [
+                f"priority: {triage.priority}",
+                f"needs clarification: {'yes' if triage.needs_clarification else 'no'}",
+            ],
+        )
 
         # Optional clarification gate (only if triage asked for it), 7-day timeout.
         if triage.needs_clarification:
@@ -154,6 +175,17 @@ class BugWorkflow:
         self._cost += pod.cost_tokens
         self._cost_usd += pod.cost_usd
         await self._check_budget()
+        await self._notify_progress(
+            "engineering",
+            [
+                f"coding: {pod.story_result.status}"
+                + (f" ({pod.story_result.tier})" if pod.story_result.tier else ""),
+                f"PR: {pod.pr_url or pod.branch}",
+                f"QA: {'passed' if pod.qa.passed else 'failed'} — {clip(pod.qa.notes)}",
+                f"review: {'approved' if pod.review_approved else 'unresolved'}",
+                f"CI: {clip(pod.ci_notes) or 'n/a'}",
+            ],
+        )
 
         # QA gate (hard, symmetric with the feature path): halt before deploy on a red QA
         # verdict. ("Tests unavailable in sandbox" is not a fail — the profile declares that.)
@@ -243,11 +275,37 @@ class BugWorkflow:
             project=self._project,
             cost_usd=round(self._cost_usd, 4),
             context=list(context),
+            thread_ts=self._thread_ts,
         )
         try:
             await run_activity(act.notify_gate, notice, timeout=NOTIFY_TIMEOUT)
         except Exception:
             self._log.append(f"gate notification failed ({gate}); gate still open on its timeout")
+
+    async def _notify_progress(
+        self, stage: str, text: list[str], document_title: str = "", document_md: str = ""
+    ) -> None:
+        """Post a stage update into the run's Slack thread (advisory, like _notify_gate).
+        The first post anchors the thread: its returned ts is stored (deterministically —
+        activity results are part of history) and threaded onto every later notice."""
+        notice = ProgressNotice(
+            workflow_id=workflow.info().workflow_id,
+            stage=stage,
+            title=self._title,
+            project=self._project,
+            text=list(text),
+            document_title=document_title,
+            document_md=document_md,
+            thread_ts=self._thread_ts,
+            cost_usd=round(self._cost_usd, 4),
+        )
+        try:
+            result = await run_activity(act.notify_progress, notice, timeout=NOTIFY_TIMEOUT)
+        except Exception:
+            self._log.append(f"progress notification failed ({stage})")
+            return
+        if not self._thread_ts and result.ts:
+            self._thread_ts = result.ts
 
     async def _act(self, fn, *args, stage: str, timeout=None):
         self._enter(stage)

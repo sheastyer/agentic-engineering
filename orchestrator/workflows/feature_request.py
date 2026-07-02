@@ -39,6 +39,7 @@ with workflow.unsafe.imports_passed_through():
         CouncilResult,
         FeedbackEvent,
         GateNotice,
+        ProgressNotice,
         ResearchRequest,
         Status,
         Vote,
@@ -50,6 +51,20 @@ with workflow.unsafe.imports_passed_through():
     from orchestrator.workflows.engineering_pod import EngineeringPodWorkflow
 
 COUNCIL_AGENT_PERSONAS = ["legal", "sales"]
+
+
+def _research_md(report) -> str:
+    """Synthesize a ResearchReport into the markdown document attached to the run's
+    thread (rendered to PDF by the live notifier). Pure string assembly — deterministic."""
+    lines = [
+        f"# Consumer research — {report.feature_id}",
+        "",
+        f"**Overall sentiment:** {report.overall_sentiment}",
+        "",
+    ]
+    for finding in report.findings:
+        lines += [f"## {finding.persona} — {finding.sentiment}", "", finding.notes, ""]
+    return "\n".join(lines)
 
 
 class _BudgetHalt(Exception):
@@ -70,6 +85,7 @@ class FeatureRequestWorkflow:
         self._title = ""
         self._project = ""
         self._gate_context: list[str] = []
+        self._thread_ts = ""    # the run's Slack thread anchor (set by the first progress post)
 
         # Human-gate inboxes (set by signals, read at the matching gate). Each decision
         # carries WHO made it (M5 SEC: approvals are recorded with the approver's
@@ -123,16 +139,37 @@ class FeatureRequestWorkflow:
     async def run(self, event: FeedbackEvent) -> WorkflowResult:
         self._ceiling = BUDGET_USD["feature"]
         try:
-            return await self._execute(event)
+            result = await self._execute(event)
         except _BudgetHalt:
-            return self._result(event, f"Halted at budget gate (${self._cost_usd:.4f}).")
+            result = self._result(event, f"Halted at budget gate (${self._cost_usd:.4f}).")
+        # One terminal post covers every exit path (shipped/held/rejected/over-budget/...).
+        await self._notify_progress(
+            "done",
+            [f"status: {result.status}", clip(result.summary), f"total cost: ${result.cost_usd:.4f}"],
+        )
+        return result
 
     async def _execute(self, event: FeedbackEvent) -> WorkflowResult:
         self._title = event.title
         self._project = event.project
 
+        # Root of the run's Slack thread: the feedback itself, the moment work starts.
+        await self._notify_progress(
+            "feedback_received",
+            [f"kind: {event.kind}", f"from: {event.submitted_by}", clip(event.body)],
+        )
+
         # 1. PM brief
         brief = await self._act(act.pm_draft_brief, event, stage="pm_draft_brief")
+        await self._notify_progress(
+            "brief",
+            [
+                f"summary: {clip(brief.summary)}",
+                f"problem: {clip(brief.problem)}",
+                f"target users: {clip(brief.target_users)}",
+            ]
+            + ([f"complexity: {brief.complexity}"] if brief.complexity else []),
+        )
 
         # 2. Exec council: parallel agent votes + human vote (signal w/ 72h timer)
         council = await self._run_council(brief)
@@ -149,10 +186,22 @@ class FeatureRequestWorkflow:
         signoff_revisions = 0
         while True:
             prd = await self._refine_prd(prd)
+            # The full PRD rides the thread as an attached document (each revision re-posts).
+            await self._notify_progress(
+                "prd",
+                [f"PRD v{prd.version} ({prd.feature_id})"]
+                + ([f"open issues: {clip('; '.join(prd.open_issues))}"] if prd.open_issues else []),
+                document_title=f"PRD v{prd.version} — {self._title}",
+                document_md=prd.content,
+            )
 
             # 4. Conditional UX mocks
             if brief.ui_impacting:
-                await self._act(act.ux_generate_mocks, prd, stage="ux_generate_mocks")
+                mocks = await self._act(act.ux_generate_mocks, prd, stage="ux_generate_mocks")
+                await self._notify_progress(
+                    "mocks",
+                    [f"mocks: {mocks.ref}" if mocks.present else "no mocks produced"],
+                )
 
             # 5. Consumer research (child, fan-out)
             self._enter("consumer_research")
@@ -168,6 +217,13 @@ class FeatureRequestWorkflow:
             self._cost += report.cost_tokens
             self._cost_usd += report.cost_usd
             await self._check_budget()
+            await self._notify_progress(
+                "research",
+                [f"overall: {report.overall_sentiment}"]
+                + [f"{f.persona}: {f.sentiment}" for f in report.findings],
+                document_title=f"Consumer research — {self._title}",
+                document_md=_research_md(report),
+            )
 
             # 6. PM sign-off gate; "revise" loops back into PRD revision (bounded)
             decision = await self._pm_signoff_gate(prd, report)
@@ -187,6 +243,11 @@ class FeatureRequestWorkflow:
 
         # 7. Story planning
         plan = await self._act(act.architect_plan_stories, prd, report, stage="architect_plan_stories")
+        await self._notify_progress(
+            "stories",
+            [f"{len(plan.stories)} stories planned"]
+            + [f"{s.id}: {clip(s.title)} (est {s.estimate}, {s.tier})" for s in plan.stories],
+        )
 
         # 8. Engineering pod (child, orchestrator-worker)
         self._enter("engineering_pod")
@@ -198,6 +259,17 @@ class FeatureRequestWorkflow:
         self._cost += pod.cost_tokens
         self._cost_usd += pod.cost_usd
         await self._check_budget()
+        await self._notify_progress(
+            "engineering",
+            [
+                f"coding: {pod.story_result.status}"
+                + (f" ({pod.story_result.tier})" if pod.story_result.tier else ""),
+                f"PR: {pod.pr_url or pod.branch}",
+                f"QA: {'passed' if pod.qa.passed else 'failed'} — {clip(pod.qa.notes)}",
+                f"review: {'approved' if pod.review_approved else 'unresolved'}",
+                f"CI: {clip(pod.ci_notes) or 'n/a'}",
+            ],
+        )
 
         # 8a. QA gate (hard, symmetric with CI): the QA agent's final verdict on the pod's
         # output. The pod already ran its bounded QA→fix loop; if the verdict is still a fail,
@@ -298,6 +370,17 @@ class FeatureRequestWorkflow:
                 f"council: escalated, agent advisory {approvals}/{len(agent_votes)} "
                 f"-> {'approved' if approved else 'rejected'}"
             )
+        await self._notify_progress(
+            "council",
+            [
+                f"outcome: {'approved' if approved else 'rejected'}"
+                + (" (escalated to agent advisory majority)" if escalated else "")
+            ]
+            + [
+                f"{v.voter}: {'approve' if v.approve else 'reject'} — {clip(v.rationale)}"
+                for v in votes
+            ],
+        )
         return CouncilResult(votes=votes, approved=approved, escalated=escalated)
 
     async def _refine_prd(self, prd):
@@ -377,11 +460,37 @@ class FeatureRequestWorkflow:
             project=self._project,
             cost_usd=round(self._cost_usd, 4),
             context=list(context),
+            thread_ts=self._thread_ts,
         )
         try:
             await run_activity(act.notify_gate, notice, timeout=NOTIFY_TIMEOUT)
         except Exception:
             self._log.append(f"gate notification failed ({gate}); gate still open on its timeout")
+
+    async def _notify_progress(
+        self, stage: str, text: list[str], document_title: str = "", document_md: str = ""
+    ) -> None:
+        """Post a stage update into the run's Slack thread (advisory, like _notify_gate).
+        The first post anchors the thread: its returned ts is stored (deterministically —
+        activity results are part of history) and threaded onto every later notice."""
+        notice = ProgressNotice(
+            workflow_id=workflow.info().workflow_id,
+            stage=stage,
+            title=self._title,
+            project=self._project,
+            text=list(text),
+            document_title=document_title,
+            document_md=document_md,
+            thread_ts=self._thread_ts,
+            cost_usd=round(self._cost_usd, 4),
+        )
+        try:
+            result = await run_activity(act.notify_progress, notice, timeout=NOTIFY_TIMEOUT)
+        except Exception:
+            self._log.append(f"progress notification failed ({stage})")
+            return
+        if not self._thread_ts and result.ts:
+            self._thread_ts = result.ts
 
     # --- low-level activity + bookkeeping ---------------------------------------
     async def _act(self, fn, *args, stage: str):

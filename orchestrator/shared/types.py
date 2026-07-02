@@ -292,15 +292,40 @@ class GateNotice:
     project: str
     cost_usd: float = 0.0       # spend so far, surfaced at every gate
     context: list[str] = field(default_factory=list)
+    thread_ts: str = ""         # the run's Slack thread anchor; gates post in-thread
+                                # (broadcast to channel) when set, top-level when not
+
+
+@dataclass
+class ProgressNotice:
+    """A stage-completion update for the run's Slack thread (advisory, like GateNotice).
+
+    The first notice of a run (``thread_ts=""``, stage ``feedback_received``) becomes the
+    thread's root message; the workflow stores the returned ``ts`` and every later notice
+    (and gate) posts into that thread. ``document_md`` is an optional artifact (PRD,
+    research synthesis) the live notifier renders to PDF and uploads alongside."""
+
+    workflow_id: str
+    stage: str                  # "feedback_received" | "brief" | "council" | "prd" | ...
+    title: str
+    project: str
+    text: list[str] = field(default_factory=list)
+    document_title: str = ""    # set together with document_md
+    document_md: str = ""       # markdown source of the artifact to attach
+    thread_ts: str = ""
+    cost_usd: float = 0.0
 
 
 @dataclass
 class NotifyResult:
-    """Outcome of a gate notification. Advisory only: ``delivered=False`` must never
-    block the gate — the signal path and the gate's timeout work without Slack."""
+    """Outcome of a gate/progress notification. Advisory only: ``delivered=False`` must
+    never block the workflow — signals and timeouts work without Slack. ``ts`` is the
+    posted message's Slack timestamp; the run's first progress post returns the ``ts``
+    that anchors the whole thread."""
 
     delivered: bool
     note: str = ""
+    ts: str = ""
     cost_tokens: int = 0
     cost_usd: float = 0.0
 

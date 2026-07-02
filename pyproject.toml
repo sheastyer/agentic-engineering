@@ -21,11 +21,14 @@ dev = [
 agent-sdk = [
     "claude-agent-sdk>=0.2",
 ]
-# Slack human gates (M5, D1) — only the live notifier (ORG_SLACK=1) and the Socket Mode
-# listener import it, lazily; the stub/$0 path and the test suite never need it, so it's
-# an extra rather than a core dep (mirrors agent-sdk).
+# Slack human gates + progress thread (M5, D1) — only the live notifier (ORG_SLACK=1)
+# and the Socket Mode listener import these, lazily; the stub/$0 path never needs them,
+# so it's an extra rather than a core dep (mirrors agent-sdk). fpdf2+markdown render the
+# thread's artifacts (PRD, research) to PDF — pure-Python on purpose (no system deps).
 slack = [
     "slack_sdk>=3.27",
+    "fpdf2>=2.7",
+    "markdown>=3.5",
 ]
 
 [tool.pytest.ini_options]

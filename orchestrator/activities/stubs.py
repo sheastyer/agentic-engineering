@@ -27,6 +27,7 @@ from orchestrator.shared.types import (
     NotifyResult,
     PRD,
     PRResult,
+    ProgressNotice,
     QAResult,
     ResearchFinding,
     ResearchReport,
@@ -238,6 +239,14 @@ async def notify_gate(notice: GateNotice) -> NotifyResult:
 
 
 @activity.defn
+async def notify_progress(notice: ProgressNotice) -> NotifyResult:
+    # Stub for the run's Slack progress thread (M5 human-I/O). The live twin (ORG_SLACK=1)
+    # posts each stage into the run's thread and uploads document_md artifacts as PDFs;
+    # the stub is a $0 no-op. Advisory either way — a failed post never blocks the run.
+    return NotifyResult(delivered=False, note="(stub) no human-I/O channel")
+
+
+@activity.defn
 async def deploy(project: str, branch: str) -> DeployResult:
     # Stub for the Project Profile's deploy target (PR/merge/container). Only ever
     # reached behind the human deploy-approval gate (CLAUDE.md §9.2).
@@ -290,6 +299,7 @@ ALL_ACTIVITIES = [
     revise_after_ci,
     update_pr,
     notify_gate,
+    notify_progress,
     deploy,
     triage_feedback,
     dedupe_check,

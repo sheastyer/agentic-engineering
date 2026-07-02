@@ -8,7 +8,7 @@ Pure functions over plain data: no Slack or Temporal imports, testable for $0.
 import json
 from dataclasses import dataclass
 
-from orchestrator.shared.types import GateNotice
+from orchestrator.shared.types import GateNotice, ProgressNotice
 
 # gate -> [(label, decision, button style)]. A gate with no buttons is notify-only:
 # the clarification gate wants free text, which a button can't carry — the human
@@ -28,6 +28,49 @@ GATE_LABELS = {
     "budget": "Budget override",
     "clarification": "Reporter clarification needed",
 }
+
+# Progress-thread stages (ProgressNotice.stage) — presentation only, so it lives here
+# in the Slack layer, not in workflow code.
+STAGE_LABELS = {
+    "feedback_received": "New feedback",
+    "brief": "PM brief",
+    "council": "Council decision",
+    "prd": "PRD",
+    "mocks": "UX mocks",
+    "research": "Consumer research",
+    "stories": "Story plan",
+    "engineering": "Engineering pod",
+    "triage": "Triage",
+    "done": "Run finished",
+}
+STAGE_EMOJI = {
+    "feedback_received": "📥",
+    "brief": "📝",
+    "council": "🏛️",
+    "prd": "📄",
+    "mocks": "🎨",
+    "research": "🔬",
+    "stories": "🧱",
+    "engineering": "🤖",
+    "triage": "🩺",
+    "done": "🏁",
+}
+
+
+def render_progress_text(notice: ProgressNotice) -> str:
+    """One mrkdwn message per stage. The run's first post (no thread yet) is the thread
+    root, so it leads with the feedback title + ids; replies lead with the stage label."""
+    emoji = STAGE_EMOJI.get(notice.stage, "•")
+    label = STAGE_LABELS.get(notice.stage, notice.stage)
+    if not notice.thread_ts:
+        head = (
+            f"{emoji} *{label}:* {notice.title}\n"
+            f"*workflow:* `{notice.workflow_id}` · *project:* {notice.project}"
+        )
+    else:
+        head = f"{emoji} *{label}*"
+    body = "\n".join(notice.text)
+    return (head + (f"\n{body}" if body else ""))[:3000]
 
 
 @dataclass
