@@ -1,0 +1,96 @@
+# story bugfix-demo-7a29ae49
+diff --git a/app/not-found.tsx b/app/not-found.tsx
+new file mode 100644
+index 0000000..d36a078
+--- /dev/null
++++ b/app/not-found.tsx
+@@ -0,0 +1,89 @@
++import Link from 'next/link'
++import type { CSSProperties } from 'react'
++import { displayType } from '@/components/logo'
++import { SearchSpot } from '@/components/spot-illustrations'
++import { Screen } from '@/components/ui'
++
++// Next's built-in special file: rendered for any unmatched route (and
++// wherever `notFound()` is called) inside the existing RootLayout, so header
++// nav / footer chrome is preserved — only the body swaps in. Without this
++// file, broken/outdated links fell through to Next's default plain-text 404.
++// A plain long-form screen (no pinned bottom bar), matching household/recipe
++// detail — see CLAUDE.md's mobile ergonomics rule 3.
++export default function NotFound() {
++  return (
++    <Screen>
++      <div style={contentStyle}>
++        <SearchSpot />
++        <div style={titleStyle}>This page wandered off</div>
++        <div style={bodyStyle}>
++          The link you followed doesn&rsquo;t match anything here — it may be outdated or
++          mistyped.
++        </div>
++        <div
++          style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%', marginTop: 4 }}
++        >
++          <Link href="/calendar" style={ctaPrimaryStyle}>
++            Back to your week
++          </Link>
++          <Link href="/cookbook" style={ctaSecondaryStyle}>
++            Browse your cookbook
++          </Link>
++        </div>
++      </div>
++    </Screen>
++  )
++}
++
++const contentStyle: CSSProperties = {
++  flex: 1,
++  display: 'flex',
++  flexDirection: 'column',
++  alignItems: 'center',
++  justifyContent: 'center',
++  textAlign: 'center',
++  gap: 12,
++  padding: '48px 22px 44px',
++}
++
++const titleStyle: CSSProperties = {
++  ...displayType,
++  fontSize: 20,
++  fontWeight: 600,
++  color: 'var(--text)',
++}
++
++const bodyStyle: CSSProperties = {
++  fontSize: 14,
++  color: 'var(--text-2)',
++  lineHeight: 1.5,
++  maxWidth: 300,
++}
++
++const ctaPrimaryStyle: CSSProperties = {
++  display: 'flex',
++  alignItems: 'center',
++  justifyContent: 'center',
++  height: 50,
++  borderRadius: 14,
++  background: 'var(--accent)',
++  color: 'var(--on-accent)',
++  fontSize: 15.5,
++  fontWeight: 600,
++  textDecoration: 'none',
++  boxShadow: '0 6px 16px var(--accent-shadow)',
++}
++
++const ctaSecondaryStyle: CSSProperties = {
++  display: 'flex',
++  alignItems: 'center',
++  justifyContent: 'center',
++  height: 50,
++  borderRadius: 14,
++  background: 'var(--surface)',
++  color: 'var(--accent)',
++  fontSize: 15,
++  fontWeight: 600,
++  border: '1.5px solid var(--accent)',
++  textDecoration: 'none',
++}
