@@ -26,7 +26,9 @@ async def test_bug_ships_through_gated_deploy():
             result = await handle.result()
 
     assert result.status == Status.SHIPPED
-    assert "fix" in result.stage_log and "qa" in result.stage_log
+    # The fix rides the engineering pod (one pod, two entry points) and ships a real ref.
+    assert "engineering_pod" in result.stage_log
+    assert "pr" in result.summary or "branch" in result.summary or "agentic/" in result.summary
 
 
 @pytest.mark.asyncio
@@ -66,4 +68,4 @@ async def test_bug_duplicate_closes_early():
             result = await handle.result()
 
     assert result.status == Status.CLOSED_DUPLICATE
-    assert "fix" not in result.stage_log
+    assert "engineering_pod" not in result.stage_log

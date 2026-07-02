@@ -145,6 +145,8 @@ class StoryPlan:
     stories: list[Story]
     project: str = ""           # Project Profile id, carried so the pod can load the target repo
     complexity: str = ""        # architect's whole-feature scope read (small|medium|large); bounds story count
+    context: str = ""           # extra background handed verbatim to the coding agent (e.g. the
+                                # bug report body on the bug path); untrusted text, quoted in the prompt
     cost_tokens: int = 0
     cost_usd: float = 0.0
 

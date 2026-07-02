@@ -71,7 +71,6 @@ def build_activities() -> list:
         from orchestrator.activities.coding_backed import (
             await_ci_agent,
             deploy_agent,
-            fix_bug_agent,
             implement_stories_agent,
             open_pr_agent,
             revise_after_ci_agent,
@@ -84,7 +83,6 @@ def build_activities() -> list:
         activities = _replace_by_name(activities, "await_ci", await_ci_agent)
         activities = _replace_by_name(activities, "revise_after_ci", revise_after_ci_agent)
         activities = _replace_by_name(activities, "update_pr", update_pr_agent)
-        activities = _replace_by_name(activities, "fix_bug", fix_bug_agent)
         activities = _replace_by_name(activities, "open_pr", open_pr_agent)
         activities = _replace_by_name(activities, "deploy", deploy_agent)
         logging.info(

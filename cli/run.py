@@ -74,13 +74,21 @@ async def drive_feature(handle: WorkflowHandle) -> None:
 
 async def drive_bug(handle: WorkflowHandle) -> None:
     q = BugWorkflow.get_state
-    done = {"deploy": False}
+    done = {"deploy": False, "budget": False}
     seen = 0
+    misses = 0
     while True:
         try:
             state = await handle.query(q)
+            misses = 0
         except Exception:
-            break
+            # Same transient-query resilience as the feature driver: only give up after
+            # many consecutive misses (the workflow is genuinely gone).
+            misses += 1
+            if misses > 50:
+                break
+            await asyncio.sleep(0.6)
+            continue
         for line in state.log[seen:]:
             print(f"   · {line}")
         seen = len(state.log)
@@ -88,6 +96,12 @@ async def drive_bug(handle: WorkflowHandle) -> None:
             await handle.signal(BugWorkflow.submit_deploy_approval, True)
             print("  ✓ deploy approval: APPROVE")
             done["deploy"] = True
+        elif state.stage.startswith("budget_gate") and not done["budget"]:
+            # The bug path runs the real coding pod now, so the budget gate can trip
+            # mid-run; the demo driver plays the human and approves the override.
+            await handle.signal(BugWorkflow.submit_budget_decision, True)
+            print(f"  ✓ budget override: APPROVE  ({state.stage})")
+            done["budget"] = True
         if state.stage == "done":
             break
         await asyncio.sleep(1.0)

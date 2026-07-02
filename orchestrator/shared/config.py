@@ -40,9 +40,10 @@ CODING_MAX_BUDGET_USD = 2.50
 CODING_AGENT_IMAGE_DEFAULT = "agentic-coder:latest"
 
 # Per-workflow budget ceilings in USD (CLAUDE.md §10, decision D7). Lean on purpose:
-# the gate is expected to trip on real coding (M4) for a small app, forcing human review.
-# Cost is dollar-denominated from real response.usage × tier pricing (see PRICING).
-BUDGET_USD = {"feature": 3.00, "bug": 0.50}
+# the gate trips into a human override rather than silently spending. The bug ceiling
+# rose $0.50 → $2.50 when the bug path started riding the engineering pod (2026-07-02):
+# a real coding pass alone runs ~$1–2, so the old ceiling tripped on every live bug.
+BUDGET_USD = {"feature": 3.00, "bug": 2.50}
 
 # Per-1M-token pricing by model tier (Anthropic docs, 2026-06; decision D2). Used for
 # dollar-denominated cost accounting regardless of provider (the Vercel gateway may bill
