@@ -16,16 +16,18 @@ from orchestrator.humanio.gates import (
     GateAction,
     build_blocks,
     fallback_text,
+    render_progress_text,
     signal_for,
 )
-from orchestrator.humanio.notify import notify_gate_with_client
+from orchestrator.humanio.notify import notify_gate_with_client, notify_progress_with_client
+from orchestrator.humanio.pdf import markdown_to_pdf
 from orchestrator.humanio.slack_listener import (
     deliver,
     load_allowlist,
     parse_block_action,
     resolved_blocks,
 )
-from orchestrator.shared.types import GateNotice
+from orchestrator.shared.types import GateNotice, ProgressNotice
 
 
 def _notice(gate: str = "deploy") -> GateNotice:
@@ -65,15 +67,23 @@ def test_fallback_text_names_gate_and_workflow():
 
 # --- outbound: the notifier never raises ------------------------------------------
 class _FakeWebClient:
-    def __init__(self, fail: Exception | None = None):
+    def __init__(self, fail: Exception | None = None, fail_upload: Exception | None = None):
         self.fail = fail
+        self.fail_upload = fail_upload
         self.posts: list[dict] = []
+        self.uploads: list[dict] = []
 
     def chat_postMessage(self, **kwargs):
         if self.fail:
             raise self.fail
         self.posts.append(kwargs)
         return {"ok": True, "ts": "111.222"}
+
+    def files_upload_v2(self, **kwargs):
+        if self.fail_upload:
+            raise self.fail_upload
+        self.uploads.append(kwargs)
+        return {"ok": True}
 
 
 def test_notify_posts_to_the_channel():
@@ -89,6 +99,88 @@ def test_notify_degrades_on_slack_error_instead_of_raising():
     result = notify_gate_with_client(_notice(), _FakeWebClient(fail=RuntimeError("boom")), "C0TEST")
     assert result.delivered is False
     assert "boom" in result.note
+
+
+def test_gate_with_thread_posts_in_thread_and_broadcasts():
+    client = _FakeWebClient()
+    notice = _notice()
+    notice.thread_ts = "1111.2222"
+    notify_gate_with_client(notice, client, "C0TEST")
+    (post,) = client.posts
+    assert post["thread_ts"] == "1111.2222" and post["reply_broadcast"] is True
+
+
+# --- outbound: the progress thread --------------------------------------------------
+def _progress(stage: str = "brief", thread_ts: str = "1111.2222", **overrides) -> ProgressNotice:
+    notice = ProgressNotice(
+        workflow_id="feedback-123",
+        stage=stage,
+        title="Add dark mode",
+        project="meal-planner",
+        text=["summary: a dark mode toggle"],
+        thread_ts=thread_ts,
+    )
+    for key, value in overrides.items():
+        setattr(notice, key, value)
+    return notice
+
+
+def test_progress_root_post_anchors_the_thread():
+    client = _FakeWebClient()
+    result = notify_progress_with_client(_progress("feedback_received", thread_ts=""), client, "C0TEST")
+    assert result.delivered is True and result.ts == "111.222"
+    (post,) = client.posts
+    assert post["thread_ts"] is None  # the root IS the thread
+    assert "Add dark mode" in post["text"] and "feedback-123" in post["text"]
+
+
+def test_progress_reply_threads_onto_the_anchor():
+    client = _FakeWebClient()
+    notify_progress_with_client(_progress("brief"), client, "C0TEST")
+    (post,) = client.posts
+    assert post["thread_ts"] == "1111.2222"
+    assert "PM brief" in post["text"]
+
+
+def test_progress_document_uploads_pdf_into_the_thread():
+    client = _FakeWebClient()
+    notice = _progress("prd", document_title="PRD v1 — Add dark mode",
+                       document_md="# PRD\n\nA “smart” draft — with em-dashes.")
+    result = notify_progress_with_client(notice, client, "C0TEST")
+    assert result.delivered is True and result.note == ""
+    (upload,) = client.uploads
+    assert upload["thread_ts"] == "1111.2222"
+    assert upload["filename"].endswith(".pdf")
+    assert bytes(upload["file"][:5]) == b"%PDF-"
+
+
+def test_progress_upload_failure_still_delivers_the_post():
+    client = _FakeWebClient(fail_upload=RuntimeError("files:write missing"))
+    notice = _progress("prd", document_title="PRD v1", document_md="# PRD")
+    result = notify_progress_with_client(notice, client, "C0TEST")
+    assert result.delivered is True and result.ts == "111.222"
+    assert "document upload failed" in result.note
+
+
+def test_progress_post_failure_degrades_without_raising():
+    result = notify_progress_with_client(
+        _progress(), _FakeWebClient(fail=RuntimeError("boom")), "C0TEST"
+    )
+    assert result.delivered is False and "boom" in result.note
+
+
+def test_render_progress_text_root_vs_reply():
+    root = render_progress_text(_progress("feedback_received", thread_ts=""))
+    assert root.splitlines()[0].endswith("Add dark mode")
+    assert "`feedback-123`" in root
+    reply = render_progress_text(_progress("research"))
+    assert reply.splitlines()[0].endswith("*Consumer research*")
+    assert "feedback-123" not in reply  # replies stay terse; ids live on the root
+
+
+def test_markdown_to_pdf_renders_unicode_content():
+    pdf = markdown_to_pdf("# Title\n\nA “quoted” em—dash → done.\n\n- one\n- two", "Title")
+    assert pdf is not None and pdf[:5] == b"%PDF-"
 
 
 # --- inbound: payload -> action -> signal ------------------------------------------

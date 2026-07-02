@@ -105,12 +105,14 @@ def build_activities() -> list:
                 "ORG_SLACK=1 but SLACK_BOT_TOKEN / SLACK_CHANNEL_ID is not set — gate "
                 "notifications post to Slack (see .env.example)."
             )
-        from orchestrator.humanio.notify import notify_gate_slack
+        from orchestrator.humanio.notify import notify_gate_slack, notify_progress_slack
 
         activities = _replace_by_name(activities, "notify_gate", notify_gate_slack)
+        activities = _replace_by_name(activities, "notify_progress", notify_progress_slack)
         logging.info(
-            "ORG_SLACK: gate notifications post to Slack channel %s; run the Socket Mode "
-            "listener (python -m orchestrator.humanio) so button clicks reach the gates",
+            "ORG_SLACK: gate + progress notifications post to Slack channel %s; run the "
+            "Socket Mode listener (python -m orchestrator.humanio) so button clicks reach "
+            "the gates",
             os.environ.get("SLACK_CHANNEL_ID"),
         )
     return activities

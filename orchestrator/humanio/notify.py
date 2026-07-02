@@ -12,11 +12,13 @@ and timeout work without the notification.
 
 import logging
 import os
+import re
 
 from temporalio import activity
 
-from orchestrator.humanio.gates import build_blocks, fallback_text
-from orchestrator.shared.types import GateNotice, NotifyResult
+from orchestrator.humanio.gates import build_blocks, fallback_text, render_progress_text
+from orchestrator.humanio.pdf import markdown_to_pdf
+from orchestrator.shared.types import GateNotice, NotifyResult, ProgressNotice
 
 _log = logging.getLogger(__name__)
 
@@ -35,14 +37,20 @@ def _build_client():
 
 
 def notify_gate_with_client(notice: GateNotice, client, channel: str) -> NotifyResult:
-    """Core logic with an injectable client, unit-testable with a fake for $0."""
+    """Core logic with an injectable client, unit-testable with a fake for $0.
+
+    When the run has a progress thread, the gate posts into it AND broadcasts to the
+    channel (reply_broadcast) — gates need channel-level attention, thread context."""
     try:
         resp = client.chat_postMessage(
             channel=channel,
             text=fallback_text(notice),
             blocks=build_blocks(notice),
+            thread_ts=notice.thread_ts or None,
+            reply_broadcast=bool(notice.thread_ts),
         )
-        return NotifyResult(delivered=True, note=f"slack ts={resp.get('ts') or ''}")
+        ts = resp.get("ts") or ""
+        return NotifyResult(delivered=True, note="", ts=ts)
     except Exception as exc:
         _log.warning(
             "slack notify failed for %s gate %r: %s", notice.workflow_id, notice.gate, exc
@@ -50,6 +58,67 @@ def notify_gate_with_client(notice: GateNotice, client, channel: str) -> NotifyR
         return NotifyResult(delivered=False, note=f"slack notify failed: {exc}")
 
 
+def _document_filename(notice: ProgressNotice, ext: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", (notice.document_title or notice.stage).lower()).strip("-")
+    return f"{slug or notice.stage}-{notice.workflow_id}.{ext}"
+
+
+def notify_progress_with_client(notice: ProgressNotice, client, channel: str) -> NotifyResult:
+    """Post a stage update into the run's thread; upload document_md as a PDF alongside
+    (falling back to the raw markdown if rendering fails). The message is the primary
+    outcome: an upload failure still reports delivered=True so the workflow keeps the
+    thread anchor — only a failed post is a failed notification."""
+    try:
+        resp = client.chat_postMessage(
+            channel=channel,
+            text=render_progress_text(notice),
+            thread_ts=notice.thread_ts or None,
+        )
+        ts = resp.get("ts") or ""
+    except Exception as exc:
+        _log.warning(
+            "slack progress post failed for %s stage %r: %s",
+            notice.workflow_id, notice.stage, exc,
+        )
+        return NotifyResult(delivered=False, note=f"slack progress failed: {exc}")
+
+    note = ""
+    if notice.document_md:
+        thread = notice.thread_ts or ts
+        try:
+            pdf = markdown_to_pdf(notice.document_md, notice.document_title or notice.stage)
+            if pdf is not None:
+                client.files_upload_v2(
+                    channel=channel,
+                    thread_ts=thread,
+                    file=pdf,
+                    filename=_document_filename(notice, "pdf"),
+                    title=notice.document_title or notice.stage,
+                )
+            else:
+                client.files_upload_v2(
+                    channel=channel,
+                    thread_ts=thread,
+                    content=notice.document_md,
+                    filename=_document_filename(notice, "md"),
+                    title=notice.document_title or notice.stage,
+                )
+                note = "pdf render failed; uploaded markdown"
+        except Exception as exc:
+            _log.warning(
+                "slack document upload failed for %s stage %r: %s",
+                notice.workflow_id, notice.stage, exc,
+            )
+            note = f"posted, but document upload failed: {exc}"
+    return NotifyResult(delivered=True, note=note, ts=ts)
+
+
 @activity.defn(name="notify_gate")
 def notify_gate_slack(notice: GateNotice) -> NotifyResult:
     return notify_gate_with_client(notice, _build_client(), os.environ["SLACK_CHANNEL_ID"])
+
+
+@activity.defn(name="notify_progress")
+def notify_progress_slack(notice: ProgressNotice) -> NotifyResult:
+    # Sync def like notify_gate_slack: blocking HTTP belongs in the worker's thread pool.
+    return notify_progress_with_client(notice, _build_client(), os.environ["SLACK_CHANNEL_ID"])
