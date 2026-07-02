@@ -38,13 +38,14 @@ with workflow.unsafe.imports_passed_through():
         ArchitectReview,
         CouncilResult,
         FeedbackEvent,
+        GateNotice,
         ResearchRequest,
         Status,
         Vote,
         WorkflowResult,
         WorkflowState,
     )
-    from orchestrator.workflows.common import run_activity
+    from orchestrator.workflows.common import NOTIFY_TIMEOUT, clip, run_activity
     from orchestrator.workflows.consumer_research import ConsumerResearchWorkflow
     from orchestrator.workflows.engineering_pod import EngineeringPodWorkflow
 
@@ -66,29 +67,42 @@ class FeatureRequestWorkflow:
         self._prd_version = 0
         self._council_approved: bool | None = None
         self._log: list[str] = []
+        self._title = ""
+        self._project = ""
+        self._gate_context: list[str] = []
 
-        # Human-gate inboxes (set by signals, read at the matching gate).
+        # Human-gate inboxes (set by signals, read at the matching gate). Each decision
+        # carries WHO made it (M5 SEC: approvals are recorded with the approver's
+        # identity in the stage log / audit trail).
         self._human_vote: Vote | None = None
         self._pm_signoff: str | None = None      # "approve" | "revise"
+        self._pm_signoff_by = "unknown"
         self._deploy_approved: bool | None = None
+        self._deploy_approver = "unknown"
         self._budget_decision: bool | None = None  # budget-override gate
+        self._budget_approver = "unknown"
 
     # --- signals (human gates) --------------------------------------------------
+    # The `approver` args default to "unknown" so the extension is additive (replay-safe
+    # for histories signalled before identities existed, and for callers that don't send one).
     @workflow.signal
     def submit_human_vote(self, approve: bool, voter: str = "human") -> None:
         self._human_vote = Vote(voter=voter, approve=approve, rationale="human council vote")
 
     @workflow.signal
-    def submit_pm_signoff(self, decision: str) -> None:
+    def submit_pm_signoff(self, decision: str, approver: str = "unknown") -> None:
         self._pm_signoff = decision
+        self._pm_signoff_by = approver
 
     @workflow.signal
-    def submit_deploy_approval(self, approve: bool) -> None:
+    def submit_deploy_approval(self, approve: bool, approver: str = "unknown") -> None:
         self._deploy_approved = approve
+        self._deploy_approver = approver
 
     @workflow.signal
-    def submit_budget_decision(self, approve: bool) -> None:
+    def submit_budget_decision(self, approve: bool, approver: str = "unknown") -> None:
         self._budget_decision = approve
+        self._budget_approver = approver
 
     # --- query ------------------------------------------------------------------
     @workflow.query
@@ -101,6 +115,7 @@ class FeatureRequestWorkflow:
             prd_version=self._prd_version,
             council_approved=self._council_approved,
             log=list(self._log),
+            gate_context=list(self._gate_context),
         )
 
     # --- run --------------------------------------------------------------------
@@ -113,6 +128,9 @@ class FeatureRequestWorkflow:
             return self._result(event, f"Halted at budget gate (${self._cost_usd:.4f}).")
 
     async def _execute(self, event: FeedbackEvent) -> WorkflowResult:
+        self._title = event.title
+        self._project = event.project
+
         # 1. PM brief
         brief = await self._act(act.pm_draft_brief, event, stage="pm_draft_brief")
 
@@ -152,7 +170,7 @@ class FeatureRequestWorkflow:
             await self._check_budget()
 
             # 6. PM sign-off gate; "revise" loops back into PRD revision (bounded)
-            decision = await self._pm_signoff_gate()
+            decision = await self._pm_signoff_gate(prd, report)
             if decision == "approve":
                 break
             signoff_revisions += 1
@@ -204,6 +222,16 @@ class FeatureRequestWorkflow:
 
         # 9. Deploy approval gate -> deploy -> SHIPPED
         self._enter("deploy_approval")
+        await self._notify_gate(
+            "deploy",
+            [
+                f"PR: {pod.pr_url or pod.branch}",
+                f"QA: {'passed' if pod.qa.passed else 'failed'} — {clip(pod.qa.notes)}",
+                f"review: {'approved' if pod.review_approved else 'unresolved'}"
+                + (f" — {clip(pod.review_notes)}" if pod.review_notes else ""),
+                f"CI: {clip(pod.ci_notes) or 'n/a'}" + (f" ({pod.ci_url})" if pod.ci_url else ""),
+            ],
+        )
         try:
             await workflow.wait_condition(
                 lambda: self._deploy_approved is not None,
@@ -213,6 +241,9 @@ class FeatureRequestWorkflow:
             self._status = Status.ESCALATED
             return self._result(event, "Deploy approval timed out; escalated.")
 
+        self._log.append(
+            f"deploy {'approved' if self._deploy_approved else 'held'} by {self._deploy_approver}"
+        )
         if not self._deploy_approved:
             self._status = Status.HELD
             return self._result(event, "Human held the deploy.")
@@ -232,6 +263,14 @@ class FeatureRequestWorkflow:
                 *(self._act_raw(act.council_agent_vote, p, brief) for p in COUNCIL_AGENT_PERSONAS)
             )
         )
+        await self._notify_gate(
+            "council",
+            [f"brief: {clip(brief.summary)}"]
+            + [
+                f"{v.voter}: {'approve' if v.approve else 'reject'} — {clip(v.rationale)}"
+                for v in agent_votes
+            ],
+        )
 
         escalated = False
         try:
@@ -249,7 +288,8 @@ class FeatureRequestWorkflow:
             votes.append(human)
             approved = human.approve  # human override is decisive
             self._log.append(
-                f"council: human override -> {'approved' if approved else 'rejected'} (agents advisory)"
+                f"council: human override by {human.voter} -> "
+                f"{'approved' if approved else 'rejected'} (agents advisory)"
             )
         else:
             approvals = sum(1 for v in agent_votes if v.approve)
@@ -273,10 +313,17 @@ class FeatureRequestWorkflow:
         self._log.append(f"PRD loop hit cap ({MAX_PRD_PASSES}); proceeding with v{prd.version}")
         return prd
 
-    async def _pm_signoff_gate(self) -> str:
+    async def _pm_signoff_gate(self, prd, report) -> str:
         # Consume-after-read (not reset-before-wait): a decision delivered early is still
         # honored, but each loopback iteration requires a fresh signal.
         self._enter("pm_signoff")
+        await self._notify_gate(
+            "pm_signoff",
+            [
+                f"PRD v{prd.version} ({prd.feature_id})",
+                f"research: {report.overall_sentiment} across {len(report.findings)} personas",
+            ],
+        )
         try:
             await workflow.wait_condition(
                 lambda: self._pm_signoff is not None,
@@ -287,6 +334,7 @@ class FeatureRequestWorkflow:
             return "revise"
         decision = self._pm_signoff
         self._pm_signoff = None
+        self._log.append(f"pm sign-off: {decision or 'revise'} (by {self._pm_signoff_by})")
         return decision or "revise"
 
     async def _check_budget(self) -> None:
@@ -296,6 +344,10 @@ class FeatureRequestWorkflow:
             return
         self._enter(f"budget_gate (${self._cost_usd:.4f} > ${self._ceiling:.2f})")
         self._budget_decision = None
+        await self._notify_gate(
+            "budget",
+            [f"spent ${self._cost_usd:.4f} of the ${self._ceiling:.2f} ceiling"],
+        )
         try:
             await workflow.wait_condition(
                 lambda: self._budget_decision is not None,
@@ -307,11 +359,29 @@ class FeatureRequestWorkflow:
             raise _BudgetHalt()
         if self._budget_decision:
             self._budget_overridden = True
-            self._log.append("budget override approved; continuing")
+            self._log.append(f"budget override approved by {self._budget_approver}; continuing")
             return
         self._status = Status.OVER_BUDGET
-        self._log.append("budget override declined; halting")
+        self._log.append(f"budget override declined by {self._budget_approver}; halting")
         raise _BudgetHalt()
+
+    async def _notify_gate(self, gate: str, context: list[str]) -> None:
+        """Tell the human-I/O channel this workflow is parked at a gate. Advisory: a
+        notification failure must never block or kill the gate — the signal path and the
+        gate's timeout still work without it, so failures degrade to a log line."""
+        self._gate_context = list(context)
+        notice = GateNotice(
+            workflow_id=workflow.info().workflow_id,
+            gate=gate,
+            title=self._title,
+            project=self._project,
+            cost_usd=round(self._cost_usd, 4),
+            context=list(context),
+        )
+        try:
+            await run_activity(act.notify_gate, notice, timeout=NOTIFY_TIMEOUT)
+        except Exception:
+            self._log.append(f"gate notification failed ({gate}); gate still open on its timeout")
 
     # --- low-level activity + bookkeeping ---------------------------------------
     async def _act(self, fn, *args, stage: str):

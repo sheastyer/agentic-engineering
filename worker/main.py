@@ -5,11 +5,14 @@ queue. Run alongside `temporal server start-dev`:
 
     ./.venv/bin/python -m worker.main
 
-Two switches, one per plane (CLAUDE.md §2):
+Three switches — one per plane (CLAUDE.md §2) plus the human-I/O channel (M5):
 - ORG_LIVE=1     — every reasoning persona runs live on the Vercel AI Gateway.
 - USE_AGENT_CODING=1 — the engineering pod runs a real coding agent on the Claude
   subscription (CODING_AGENT/CODING_SANDBOX/CODING_PR_TARGET knobs).
-Neither set = $0 stubs (the test/dev default).
+- ORG_SLACK=1    — gate notifications post to Slack with approve/reject buttons
+  (SLACK_BOT_TOKEN/SLACK_CHANNEL_ID; run `python -m orchestrator.humanio` for the
+  inbound listener that turns clicks into gate signals).
+None set = $0 stubs (the test/dev default).
 """
 
 import asyncio
@@ -92,6 +95,23 @@ def build_activities() -> list:
             os.environ.get("CODING_AGENT", "mock"),
             os.environ.get("CODING_SANDBOX", "local"),
             os.environ.get("CODING_PR_TARGET", "local"),
+        )
+
+    if os.environ.get("ORG_SLACK"):
+        # Same fail-fast pattern as ORG_LIVE: a missing token must never produce a
+        # "live" worker whose gates notify nobody.
+        if not (os.environ.get("SLACK_BOT_TOKEN") and os.environ.get("SLACK_CHANNEL_ID")):
+            raise SystemExit(
+                "ORG_SLACK=1 but SLACK_BOT_TOKEN / SLACK_CHANNEL_ID is not set — gate "
+                "notifications post to Slack (see .env.example)."
+            )
+        from orchestrator.humanio.notify import notify_gate_slack
+
+        activities = _replace_by_name(activities, "notify_gate", notify_gate_slack)
+        logging.info(
+            "ORG_SLACK: gate notifications post to Slack channel %s; run the Socket Mode "
+            "listener (python -m orchestrator.humanio) so button clicks reach the gates",
+            os.environ.get("SLACK_CHANNEL_ID"),
         )
     return activities
 

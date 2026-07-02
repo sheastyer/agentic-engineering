@@ -187,7 +187,7 @@ async def test_human_overrides_agent_dissent():
             result = await handle.result()
 
     assert result.status == Status.SHIPPED
-    assert any("human override -> approved" in line for line in result.stage_log)
+    assert any("human override by tester -> approved" in line for line in result.stage_log)
 
 
 @pytest.mark.asyncio

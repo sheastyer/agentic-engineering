@@ -105,6 +105,29 @@ event loop (Temporal's deadlock detector fires transiently and recovers — move
 sync/thread-pool activities or the async client), and the run-org driver's auto-approval
 stands in for the M5 human-I/O channel (Slack planned).
 
+**Update (2026-07-02) — Slack human gates built (M5 human-I/O half, D1):** per
+[`docs/handoff-slack-gates.md`](./docs/handoff-slack-gates.md). Outbound: every human gate
+(council, PM sign-off, deploy, budget override, bug clarification) now calls a `notify_gate`
+activity right before parking on its signal — stub no-op by default; `ORG_SLACK=1` swaps in
+a live Slack notifier (`orchestrator/humanio/notify.py`, sync `def` in the worker's thread
+pool) that posts Block Kit messages with approve/reject buttons (gate name, workflow id,
+title, spend, gate context — the deploy gate shows PR URL + QA/review/CI verdicts, also
+surfaced via `get_state().gate_context`). Notifications are **advisory**: a failing notifier
+degrades to a log line, never blocks/kills a gate (pinned by test). Inbound: a Socket Mode
+listener (`python -m orchestrator.humanio`, no public ingress) decodes button clicks →
+Temporal signals, enforcing a `SLACK_APPROVER_IDS` allowlist (non-allowlisted clicks are
+dropped — M5 SEC) and updating the message with the decision. The deploy/budget/signoff
+signals now carry `approver` (additive, replay-safe) and the stage log records who decided
+every gate. Gate↔button↔signal mapping lives once in `orchestrator/humanio/gates.py`; the
+clarification gate is notify-only (free text answers via CLI/signal). `slack_sdk` is a
+`[slack]` extra, imported lazily. `cli.run` keeps auto-approve for demos but watches-only
+when `ORG_SLACK` is set (`--auto-gates`/`--no-auto-gates` to override). Workflow shape
+changed (a new activity before each gate) — in-flight executions were drained rather than
+`workflow.patched()` (local dev server). **148 tests green** incl. replay with the notify
+activity in the histories. Remaining for the M5 human-I/O exit: the `MAN` round-trip (create
+the Slack app: Socket Mode on, `chat:write`, interactivity; fill `SLACK_*` in `.env`) and a
+live steel-thread run with the deploy gate approved by a real click.
+
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`
   & `EngineeringPod` children. All stages currently call **stub** activities
@@ -369,8 +392,8 @@ stands in for the M5 human-I/O channel (Slack planned).
   allow-list (above) and live cost/story COST bands on a real coding run (the mechanism exists;
   needs a live pass to set the numbers). **89 tests green.**
 
-**Open decisions blocking later milestones:** D1 (M5 human-I/O channel). D5/D6 resolved.
-See the Decisions tracker at the bottom.
+**Open decisions blocking later milestones:** none — D1 resolved (Slack, built 2026-07-02);
+D5/D6 resolved. See the Decisions tracker at the bottom.
 
 ---
 
@@ -585,8 +608,10 @@ move fast on later milestones.
 - **Goal:** real feedback enters the org from the app and humans approve through a real
   channel — the loop closes.
 - **Work:** implement the meal-planner **intake adapter** (per its profile) → normalized
-  `FeedbackEvent` → router; wire the chosen **human I/O channel** (email/Slack/dashboard)
-  to the gate signals.
+  `FeedbackEvent` → router; ✅ wire the chosen **human I/O channel** (D1: Slack) to the
+  gate signals — **built 2026-07-02** (`orchestrator/humanio/`: `notify_gate` activity +
+  Socket Mode listener; see the current-state update). MAN round-trip + live run pending
+  Slack app credentials.
 - **Evaluations:**
   - `DET` intake adapter: a feedback record from the app normalizes correctly and starts
     the right workflow (idempotent on feedback id).
@@ -610,7 +635,7 @@ move fast on later milestones.
 
 | ID | Decision | Needed by | Status |
 |---|---|---|---|
-| D1 | Human I/O channel (email / Slack / dashboard) | M5 | ✅ **Slack** (Socket Mode — no public ingress needed). Handoff spec for the build: [`docs/handoff-slack-gates.md`](./docs/handoff-slack-gates.md) |
+| D1 | Human I/O channel (email / Slack / dashboard) | M5 | ✅ **Slack** (Socket Mode — no public ingress needed). **Built 2026-07-02** (`orchestrator/humanio/` + `notify_gate`; spec: [`docs/handoff-slack-gates.md`](./docs/handoff-slack-gates.md)); MAN round-trip pending Slack app credentials |
 | D2 | Model IDs + pricing | M2 | ✅ `claude-haiku-4-5` $1/$5 · `claude-sonnet-5` $3/$15 (intro $2/$10 to 2026-08-31) · `claude-opus-4-8` $5/$25 (per 1M tok) |
 | D3 | Billing path | M2/M4 | ✅ **API credits / pay-as-you-go** (verified live 2026-06-14: Claude.ai subscription does NOT fund the Developer-Platform API — `400 credit balance too low`). Need Console API credits regardless of OAuth-vs-key; Vercel gateway is an alt with its own billing |
 | D4 | Repo handling — managed per-run workspace | M4 | ✅ yes (per-run workspace) |
