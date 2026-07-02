@@ -1,4 +1,4 @@
-"""Runner-backed activities — the M3 swap targets (one real persona at a time).
+"""Runner-backed activities — the live reasoning personas (swapped in by ORG_LIVE=1).
 
 This is the bridge between the generic Agent Runner and the workflow's plain dataclasses:
 the runner returns a Pydantic contract instance; the activity adapts it into the
@@ -6,9 +6,14 @@ replay-serialized workflow type (orchestrator/shared/types.py), carrying the rea
 cost. The core logic is a plain function so it can be unit-tested with a fake client for
 $0; the @activity.defn wrapper supplies the real (lazy-built) client at runtime.
 
-NOT yet registered in the worker's ALL_ACTIVITIES — swapping it in (under the stub's
-activity name) is the M3 step, done once live auth is available. Until then the stub
-remains the default so M1/M2 stay green and token-free.
+**Every wrapper here is a SYNC `def`, deliberately — do not make them async.** The runner
+makes blocking HTTP calls (the sync openai client). An `async def` activity runs ON the
+worker's event loop, so each model call stalled the loop and starved workflow tasks —
+Temporal's deadlock detector ([TMPRL1101] "workflow didn't yield within 2 seconds") fired
+repeatedly during live runs (2026-07-02), recovering only via workflow-task retries. Sync
+activities run in the worker's thread-pool `activity_executor` (worker/main.py) instead,
+keeping the event loop free. The coding-plane activities (coding_backed.py) stay async —
+they await the Agent SDK, which is genuinely async.
 """
 
 import logging
@@ -160,7 +165,7 @@ def triage_with_runner(provider: ModelProvider, event: FeedbackEvent) -> Triage:
 
 
 @activity.defn(name="triage_feedback")
-async def triage_feedback_agent(event: FeedbackEvent) -> Triage:
+def triage_feedback_agent(event: FeedbackEvent) -> Triage:
     """Live triage on the Vercel AI Gateway (the only reasoning-plane provider).
     Registered under the stub's name so the swap is a one-liner."""
     return triage_with_runner(build_provider(), event)
@@ -189,7 +194,7 @@ def draft_brief_with_runner(provider: ModelProvider, event: FeedbackEvent) -> Br
 
 
 @activity.defn(name="pm_draft_brief")
-async def pm_draft_brief_agent(event: FeedbackEvent) -> Brief:
+def pm_draft_brief_agent(event: FeedbackEvent) -> Brief:
     """Live PM brief authoring. Registered under the stub's name so the swap is a one-liner."""
     return draft_brief_with_runner(build_provider(), event)
 
@@ -218,7 +223,7 @@ def council_vote_with_runner(provider: ModelProvider, voter: str, brief: Brief) 
 
 
 @activity.defn(name="council_agent_vote")
-async def council_agent_vote_agent(persona: str, brief: Brief) -> Vote:
+def council_agent_vote_agent(persona: str, brief: Brief) -> Vote:
     """Live council vote. Registered under the stub's name so the swap is a one-liner.
     `persona` is the workflow's voter id (legal/sales)."""
     return council_vote_with_runner(build_provider(), persona, brief)
@@ -246,7 +251,7 @@ def research_finding_with_runner(provider: ModelProvider, demographic: str, prd:
 
 
 @activity.defn(name="consumer_research_persona")
-async def consumer_research_persona_agent(persona: str, prd: PRD) -> ResearchFinding:
+def consumer_research_persona_agent(persona: str, prd: PRD) -> ResearchFinding:
     """Live synthetic-consumer finding. Registered under the stub's name; `persona` is the
     panel demographic descriptor (DEFAULT_RESEARCH_PERSONAS)."""
     return research_finding_with_runner(build_provider(), persona, prd)
@@ -283,7 +288,7 @@ def author_prd_with_runner(provider: ModelProvider, brief: Brief) -> PRD:
 
 
 @activity.defn(name="pm_write_prd")
-async def pm_write_prd_agent(brief: Brief) -> PRD:
+def pm_write_prd_agent(brief: Brief) -> PRD:
     """Live PRD authoring. Registered under the stub's name so the swap is a one-liner."""
     return author_prd_with_runner(build_provider(), brief)
 
@@ -315,7 +320,7 @@ def revise_prd_with_runner(provider: ModelProvider, prd: PRD, review: ArchitectR
 
 
 @activity.defn(name="pm_revise_prd")
-async def pm_revise_prd_agent(prd: PRD, review: ArchitectReview) -> PRD:
+def pm_revise_prd_agent(prd: PRD, review: ArchitectReview) -> PRD:
     """Live PRD revision. Registered under the stub's name so the swap is a one-liner."""
     return revise_prd_with_runner(build_provider(), prd, review)
 
@@ -346,7 +351,7 @@ def review_prd_with_runner(provider: ModelProvider, prd: PRD, pass_no: int) -> A
 
 
 @activity.defn(name="architect_review_prd")
-async def architect_review_prd_agent(prd: PRD, pass_no: int) -> ArchitectReview:
+def architect_review_prd_agent(prd: PRD, pass_no: int) -> ArchitectReview:
     """Live architect PRD review. Registered under the stub's name so the swap is a one-liner."""
     return review_prd_with_runner(build_provider(), prd, pass_no)
 
@@ -389,7 +394,7 @@ def plan_stories_with_runner(provider: ModelProvider, prd: PRD, report: Research
 
 
 @activity.defn(name="architect_plan_stories")
-async def architect_plan_stories_agent(prd: PRD, report: ResearchReport) -> StoryPlan:
+def architect_plan_stories_agent(prd: PRD, report: ResearchReport) -> StoryPlan:
     """Live architect story planning. Registered under the stub's name so the swap is a one-liner."""
     return plan_stories_with_runner(build_provider(), prd, report)
 
@@ -415,7 +420,7 @@ def prioritize_bug_with_runner(provider: ModelProvider, event: FeedbackEvent, tr
 
 
 @activity.defn(name="pm_prioritize_bug")
-async def pm_prioritize_bug_agent(event: FeedbackEvent, triage: Triage) -> BugPriority:
+def pm_prioritize_bug_agent(event: FeedbackEvent, triage: Triage) -> BugPriority:
     """Live PM bug prioritization. Registered under the stub's name so the swap is a one-liner."""
     return prioritize_bug_with_runner(build_provider(), event, triage)
 
@@ -490,7 +495,7 @@ def review_diff_with_runner(
 
 
 @activity.defn(name="review_diff")
-async def review_diff_agent(plan: StoryPlan, story_result: StoryResult) -> ReviewResult:
+def review_diff_agent(plan: StoryPlan, story_result: StoryResult) -> ReviewResult:
     """Live code review of the pod's diff. Registered under the stub's name so the swap is a
     one-liner. Reasoning plane (Vercel gateway), not the coding subscription."""
     return review_diff_with_runner(build_provider(), plan, story_result)
@@ -560,7 +565,7 @@ def qa_review_with_runner(
 
 
 @activity.defn(name="qa_review")
-async def qa_review_agent(project: str, story_results: list[StoryResult]) -> QAResult:
+def qa_review_agent(project: str, story_results: list[StoryResult]) -> QAResult:
     """Live functional QA over the pod's attempt(s). Registered under the stub's name so the
     swap is a one-liner. Reasoning plane (Vercel gateway), not the coding subscription."""
     return qa_review_with_runner(build_provider(), project, story_results)

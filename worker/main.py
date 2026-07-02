@@ -15,6 +15,7 @@ Neither set = $0 stubs (the test/dev default).
 import asyncio
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 from temporalio.client import Client
 from temporalio.worker import Worker
@@ -110,6 +111,11 @@ async def main() -> None:
         task_queue=TASK_QUEUE,
         workflows=ALL_WORKFLOWS,
         activities=build_activities(),
+        # The live reasoning activities are SYNC functions (blocking HTTP via the runner —
+        # see agent_backed.py's module docstring); they run here, in a thread pool, so they
+        # can never stall the event loop that schedules workflow tasks. Sized comfortably
+        # above the widest fan-out (research 4 + council 2 + a review/QA in flight).
+        activity_executor=ThreadPoolExecutor(max_workers=16),
     )
     logging.info("worker connected to %s; serving task queue %r", TEMPORAL_TARGET, TASK_QUEUE)
     await worker.run()
