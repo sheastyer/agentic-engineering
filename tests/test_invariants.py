@@ -74,6 +74,7 @@ def test_no_secrets_in_source():
         re.compile(r"sk-ant-[A-Za-z0-9-]{8,}"),         # Anthropic API key
         re.compile(r"whsec_[A-Za-z0-9]{8,}"),           # webhook signing secret
         re.compile(r"ANTHROPIC_API_KEY\s*=\s*['\"]\S"),  # assigned a literal value
+        re.compile(r"xox[abp]-[A-Za-z0-9-]{10,}"),       # Slack bot/app/user token
     ]
     skip_dirs = {".venv", ".git", "__pycache__", ".pytest_cache", "node_modules"}
     offenders = []

@@ -22,7 +22,9 @@ from orchestrator.shared.types import (
     DeployResult,
     FeedbackEvent,
     FeedbackKind,
+    GateNotice,
     Mocks,
+    NotifyResult,
     PRD,
     PRResult,
     QAResult,
@@ -227,6 +229,15 @@ async def update_pr(project: str, branch: str, story_results: list[StoryResult])
 
 
 @activity.defn
+async def notify_gate(notice: GateNotice) -> NotifyResult:
+    # Stub for the human-I/O channel (M5, D1: Slack). The live twin (ORG_SLACK=1,
+    # orchestrator/humanio/notify.py) posts a Block Kit message with approve/reject
+    # buttons; the stub is a $0 no-op so tests and stub runs never touch Slack. Advisory
+    # either way: the gate's signal + timeout work whether or not this delivers.
+    return NotifyResult(delivered=False, note="(stub) no human-I/O channel")
+
+
+@activity.defn
 async def deploy(project: str, branch: str) -> DeployResult:
     # Stub for the Project Profile's deploy target (PR/merge/container). Only ever
     # reached behind the human deploy-approval gate (CLAUDE.md §9.2).
@@ -278,6 +289,7 @@ ALL_ACTIVITIES = [
     await_ci,
     revise_after_ci,
     update_pr,
+    notify_gate,
     deploy,
     triage_feedback,
     dedupe_check,

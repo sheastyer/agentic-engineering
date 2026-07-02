@@ -40,6 +40,19 @@ DEFAULT_RETRY = RetryPolicy(
 )
 
 
+# Gate notifications (notify_gate) are one small HTTP post (or a stub no-op) — never minutes.
+NOTIFY_TIMEOUT = timedelta(seconds=30)
+
+# Keep gate-context lines (review notes, QA notes, rationales) readable in a chat message.
+_CONTEXT_LINE_CHARS = 300
+
+
+def clip(text: str, limit: int = _CONTEXT_LINE_CHARS) -> str:
+    """Squash a possibly-long/multiline note into one bounded gate-context line."""
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 async def run_activity(fn, *args, timeout: timedelta | None = None):
     """Execute an activity with the org's standard retry/timeout policy.
 

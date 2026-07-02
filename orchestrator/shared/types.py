@@ -273,6 +273,39 @@ class ReviewResult:
 
 
 # ---------------------------------------------------------------------------
+# Human gates (M5 — the human-I/O channel, D1: Slack)
+# ---------------------------------------------------------------------------
+@dataclass
+class GateNotice:
+    """What a workflow tells the human-I/O channel when it parks at a gate.
+
+    Built inside workflow code (deterministically — from state the workflow already
+    holds) and handed to the ``notify_gate`` activity, whose live twin posts it to
+    Slack with approve/reject buttons. ``gate`` is one of the names in
+    ``orchestrator.humanio.gates`` ("council" | "pm_signoff" | "deploy" | "budget" |
+    "clarification"); ``context`` is gate-specific lines for the human (agent votes,
+    PR URL + QA/CI verdicts, ...)."""
+
+    workflow_id: str
+    gate: str
+    title: str                  # the feedback title, so the human knows which request
+    project: str
+    cost_usd: float = 0.0       # spend so far, surfaced at every gate
+    context: list[str] = field(default_factory=list)
+
+
+@dataclass
+class NotifyResult:
+    """Outcome of a gate notification. Advisory only: ``delivered=False`` must never
+    block the gate — the signal path and the gate's timeout work without Slack."""
+
+    delivered: bool
+    note: str = ""
+    cost_tokens: int = 0
+    cost_usd: float = 0.0
+
+
+# ---------------------------------------------------------------------------
 # Workflow-level state (queryable) + final result
 # ---------------------------------------------------------------------------
 @dataclass
@@ -284,6 +317,7 @@ class WorkflowState:
     prd_version: int = 0
     council_approved: bool | None = None
     log: list[str] = field(default_factory=list)
+    gate_context: list[str] = field(default_factory=list)  # what the human at the current gate needs (PR URL, verdicts, ...)
 
 
 @dataclass

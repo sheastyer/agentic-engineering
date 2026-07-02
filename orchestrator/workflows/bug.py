@@ -30,13 +30,14 @@ with workflow.unsafe.imports_passed_through():
     )
     from orchestrator.shared.types import (
         FeedbackEvent,
+        GateNotice,
         Status,
         Story,
         StoryPlan,
         WorkflowResult,
         WorkflowState,
     )
-    from orchestrator.workflows.common import run_activity
+    from orchestrator.workflows.common import NOTIFY_TIMEOUT, clip, run_activity
     from orchestrator.workflows.engineering_pod import EngineeringPodWorkflow
 
 
@@ -54,21 +55,30 @@ class BugWorkflow:
         self._budget_overridden = False
         self._ceiling = BUDGET_USD["bug"]
         self._log: list[str] = []
+        self._title = ""
+        self._project = ""
+        self._gate_context: list[str] = []
         self._clarification: str | None = None
         self._deploy_approved: bool | None = None
+        self._deploy_approver = "unknown"
         self._budget_decision: bool | None = None
+        self._budget_approver = "unknown"
 
+    # `approver` defaults to "unknown" so the extension is additive (replay-safe for
+    # histories signalled before identities existed; M5 SEC — approvals carry who approved).
     @workflow.signal
     def submit_user_clarification(self, text: str) -> None:
         self._clarification = text
 
     @workflow.signal
-    def submit_deploy_approval(self, approve: bool) -> None:
+    def submit_deploy_approval(self, approve: bool, approver: str = "unknown") -> None:
         self._deploy_approved = approve
+        self._deploy_approver = approver
 
     @workflow.signal
-    def submit_budget_decision(self, approve: bool) -> None:
+    def submit_budget_decision(self, approve: bool, approver: str = "unknown") -> None:
         self._budget_decision = approve
+        self._budget_approver = approver
 
     @workflow.query
     def get_state(self) -> WorkflowState:
@@ -78,6 +88,7 @@ class BugWorkflow:
             cost_tokens=self._cost,
             cost_usd=round(self._cost_usd, 6),
             log=list(self._log),
+            gate_context=list(self._gate_context),
         )
 
     @workflow.run
@@ -88,6 +99,9 @@ class BugWorkflow:
             return self._result(event, f"Halted at budget gate (${self._cost_usd:.4f}).")
 
     async def _execute(self, event: FeedbackEvent) -> WorkflowResult:
+        self._title = event.title
+        self._project = event.project
+
         triage = await self._act(act.triage_feedback, event, stage="triage")
         dedupe = await self._act(act.dedupe_check, event, stage="dedupe")
         if dedupe.is_duplicate:
@@ -97,6 +111,12 @@ class BugWorkflow:
         # Optional clarification gate (only if triage asked for it), 7-day timeout.
         if triage.needs_clarification:
             self._enter("await_clarification")
+            # Notify-only: a clarification is free text, not a button click, so the
+            # human answers via the CLI / a workflow signal (see humanio.gates).
+            await self._notify_gate(
+                "clarification",
+                [f"reporter: {event.submitted_by}", f"report: {clip(event.body)}"],
+            )
             try:
                 await workflow.wait_condition(
                     lambda: self._clarification is not None,
@@ -154,6 +174,16 @@ class BugWorkflow:
 
         # Deploy approval gate
         self._enter("deploy_approval")
+        await self._notify_gate(
+            "deploy",
+            [
+                f"PR: {pod.pr_url or pod.branch}",
+                f"QA: {'passed' if pod.qa.passed else 'failed'} — {clip(pod.qa.notes)}",
+                f"review: {'approved' if pod.review_approved else 'unresolved'}"
+                + (f" — {clip(pod.review_notes)}" if pod.review_notes else ""),
+                f"CI: {clip(pod.ci_notes) or 'n/a'}" + (f" ({pod.ci_url})" if pod.ci_url else ""),
+            ],
+        )
         try:
             await workflow.wait_condition(
                 lambda: self._deploy_approved is not None,
@@ -163,6 +193,9 @@ class BugWorkflow:
             self._status = Status.ESCALATED
             return self._result(event, "Deploy approval timed out; escalated.")
 
+        self._log.append(
+            f"deploy {'approved' if self._deploy_approved else 'held'} by {self._deploy_approver}"
+        )
         if not self._deploy_approved:
             self._status = Status.HELD
             return self._result(event, "Human held the deploy.")
@@ -177,6 +210,10 @@ class BugWorkflow:
             return
         self._enter(f"budget_gate (${self._cost_usd:.4f} > ${self._ceiling:.2f})")
         self._budget_decision = None
+        await self._notify_gate(
+            "budget",
+            [f"spent ${self._cost_usd:.4f} of the ${self._ceiling:.2f} ceiling"],
+        )
         try:
             await workflow.wait_condition(
                 lambda: self._budget_decision is not None,
@@ -188,11 +225,29 @@ class BugWorkflow:
             raise _BudgetHalt()
         if self._budget_decision:
             self._budget_overridden = True
-            self._log.append("budget override approved; continuing")
+            self._log.append(f"budget override approved by {self._budget_approver}; continuing")
             return
         self._status = Status.OVER_BUDGET
-        self._log.append("budget override declined; halting")
+        self._log.append(f"budget override declined by {self._budget_approver}; halting")
         raise _BudgetHalt()
+
+    async def _notify_gate(self, gate: str, context: list[str]) -> None:
+        """Tell the human-I/O channel this workflow is parked at a gate. Advisory: a
+        notification failure must never block or kill the gate — the signal path and the
+        gate's timeout still work without it, so failures degrade to a log line."""
+        self._gate_context = list(context)
+        notice = GateNotice(
+            workflow_id=workflow.info().workflow_id,
+            gate=gate,
+            title=self._title,
+            project=self._project,
+            cost_usd=round(self._cost_usd, 4),
+            context=list(context),
+        )
+        try:
+            await run_activity(act.notify_gate, notice, timeout=NOTIFY_TIMEOUT)
+        except Exception:
+            self._log.append(f"gate notification failed ({gate}); gate still open on its timeout")
 
     async def _act(self, fn, *args, stage: str, timeout=None):
         self._enter(stage)

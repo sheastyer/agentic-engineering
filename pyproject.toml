@@ -21,6 +21,12 @@ dev = [
 agent-sdk = [
     "claude-agent-sdk>=0.2",
 ]
+# Slack human gates (M5, D1) — only the live notifier (ORG_SLACK=1) and the Socket Mode
+# listener import it, lazily; the stub/$0 path and the test suite never need it, so it's
+# an extra rather than a core dep (mirrors agent-sdk).
+slack = [
+    "slack_sdk>=3.27",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
