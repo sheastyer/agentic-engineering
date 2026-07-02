@@ -528,7 +528,28 @@ def qa_review_with_runner(
         )
     task_input = "\n\n".join(blocks) or "(no coding attempts to QA)"
 
-    result = AgentRunner(provider).run(persona, profile, task_input)
+    try:
+        result = AgentRunner(provider).run(persona, profile, task_input)
+    except NonRetryableAgentError as e:
+        # QA runs AFTER the expensive coding pass, so a raise here kills the pod and orphans a
+        # finished diff (observed live 2026-07-02: qa_reviewer truncated on the gateway on both
+        # re-asks and the whole feature workflow died) — the same "return a result, never raise
+        # after the work is done" rule as the coding pod and the code reviewer (§10). Unlike the
+        # reviewer, QA is a HARD gate (Status.QA_FAILED), so we degrade to a *fail-safe* verdict:
+        # passed=False halts the run before deploy rather than silently waving it through. The
+        # diff still reaches a PR (the pod proceeds through review/open_pr), so no work is lost —
+        # a human sees an un-QA'd PR held at the gate, never an unattended merge.
+        _log.warning(
+            "functional QA unavailable for %s (%s); failing safe — the run will halt at the QA "
+            "gate before deploy", project, e,
+        )
+        return QAResult(
+            passed=False,
+            notes="QA verdict unavailable (the QA agent produced no schema-valid output after "
+            "bounded re-asks); failing safe — human review required before deploy.",
+            cost_tokens=0,
+            cost_usd=0.0,
+        )
     out: QAReviewOutput = result.payload
     return QAResult(
         passed=out.passed,

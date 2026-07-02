@@ -596,6 +596,27 @@ def test_review_diff_degrades_to_non_blocking_when_reviewer_cannot_parse():
     assert len(provider.calls) == 2         # code_reviewer max_reask=1 -> 2 attempts, then degrade
 
 
+def test_qa_review_fails_safe_when_qa_agent_cannot_parse():
+    """QA also runs AFTER the coding pass, so a parse failure must NOT raise (a live run died
+    this way 2026-07-02: qa_reviewer truncated on both re-asks → NonRetryableAgentError killed
+    the pod and orphaned a finished diff). Unlike the reviewer it degrades to a FAIL-SAFE
+    verdict — passed=False — because QA is a hard gate (Status.QA_FAILED): the run halts before
+    deploy with the diff preserved in a PR, instead of silently waving un-QA'd work through."""
+    from orchestrator.activities.agent_backed import qa_review_with_runner
+    from orchestrator.shared.types import QAResult, StoryResult
+
+    provider = _FakeProvider(payload=None, in_tok=100, out_tok=10)  # never parses -> runner raises
+    result = StoryResult(story_id="feat-x", status="done", pr_ref="", summary="did it",
+                         diff="diff --git a/a.ts b/a.ts\n+const a = 1\n")
+
+    qa = qa_review_with_runner(provider, "meal-planner", [result])
+
+    assert isinstance(qa, QAResult)
+    assert qa.passed is False               # fail-safe: halt at the QA gate, never a silent pass
+    assert "unavailable" in qa.notes.lower()
+    assert len(provider.calls) == 2         # qa_reviewer max_reask=1 -> 2 attempts, then degrade
+
+
 def test_qa_review_weighs_diff_and_status_not_just_the_developer_summary():
     """The real QA agent must reach the provider the OBJECTIVE status and the actual diff (not
     only the developer's self-report), and adapt the contract to a QAResult — so an optimistic
