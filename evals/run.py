@@ -3,15 +3,15 @@
     # $0 plumbing run (synthesizes schema-valid payloads from each case's expect):
     ./.venv/bin/python -m evals.run --persona triage --provider mock
 
-    # live run (needs provider auth; spends a few cents):
-    MODEL_PROVIDER=anthropic ./.venv/bin/python -m evals.run --persona triage --provider anthropic
+    # live run (needs AI_GATEWAY_API_KEY; spends a few cents):
+    set -a; . ./.env; set +a; ./.venv/bin/python -m evals.run --persona triage --provider vercel
 
 Reports CON (schema conformance), deterministic field-assertion pass rate, and dollar
 cost. For subjective personas (e.g. pm_write_prd), pass `--judge` to also gate on the
 LLM-judge's must-have criteria (D5: judge calibrated against human labels, 0 false-pass).
 
     # PRD-authoring with the judge gate (CON + assertions + judge must-haves):
-    set -a; . ./.env; set +a; MODEL_PROVIDER=vercel \
+    set -a; . ./.env; set +a; \
         ./.venv/bin/python -m evals.run --persona pm_write_prd --provider vercel --judge
 """
 
@@ -35,7 +35,7 @@ REPO = Path(__file__).resolve().parent.parent
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run a persona eval set.")
     parser.add_argument("--persona", default="triage")
-    parser.add_argument("--provider", default="mock", help="mock | anthropic | vercel")
+    parser.add_argument("--provider", default="mock", help="mock | vercel")
     parser.add_argument("--project", default="meal-planner")
     parser.add_argument("--cases", default=None, help="path to cases.jsonl")
     parser.add_argument("--min-pass", type=float, default=1.0,
@@ -65,7 +65,7 @@ def main() -> int:
     quality_scorer = None
     if args.judge:
         if args.provider == "mock":
-            print("--judge needs a live provider (anthropic|vercel), not mock.")
+            print("--judge needs a live provider (vercel), not mock.")
             return 2
         from evals.judge import judge_prd
 

@@ -1,28 +1,25 @@
-"""Provider selection. `MODEL_PROVIDER` env var picks the backend at runtime (default
-anthropic). Read here — in an activity-side module, never in workflow-imported config —
-so workflows stay free of env reads (R3)."""
-
-import os
+"""Provider selection — the reasoning plane is **Vercel AI Gateway only** (decided
+2026-07-02: one provider per plane; the coding plane draws on the Claude subscription via
+the Agent SDK, see agents/coding). Kept as a factory so evals/tests can name a provider
+explicitly ("vercel", or their own injected fake elsewhere); anything unknown fails loudly
+rather than silently falling back."""
 
 from orchestrator.agents.provider import ModelProvider
-from orchestrator.agents.providers.anthropic_provider import AnthropicProvider
 from orchestrator.agents.providers.vercel_provider import VercelGatewayProvider
-from orchestrator.shared.config import DEFAULT_MODEL_PROVIDER
 
 _PROVIDERS = {
-    "anthropic": AnthropicProvider,
     "vercel": VercelGatewayProvider,
 }
 
 
 def build_provider(name: str | None = None) -> ModelProvider:
-    """Return the selected provider. Precedence: explicit arg → MODEL_PROVIDER env →
-    DEFAULT_MODEL_PROVIDER. Construction is cheap and lazy — no SDK/client built until
-    the first call."""
-    resolved = (name or os.environ.get("MODEL_PROVIDER") or DEFAULT_MODEL_PROVIDER).lower()
+    """Return the selected provider (default: vercel — the only reasoning backend).
+    Construction is cheap and lazy — no SDK/client built until the first call."""
+    resolved = (name or "vercel").lower()
     try:
         return _PROVIDERS[resolved]()
     except KeyError:
         raise ValueError(
-            f"unknown MODEL_PROVIDER {resolved!r}; use one of {sorted(_PROVIDERS)}"
+            f"unknown provider {resolved!r}; the reasoning plane is vercel-only "
+            f"(use one of {sorted(_PROVIDERS)})"
         ) from None

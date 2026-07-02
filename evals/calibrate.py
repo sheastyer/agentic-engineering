@@ -10,9 +10,9 @@ The judge must be validated against HUMAN labels before it gates anything. Workf
      (esp. false-pass: the judge OK'ing what you rejected). Only trust the judge as a gate
      once agreement is high and false-pass is ~0.
 
-    set -a; . ./.env; set +a; MODEL_PROVIDER=vercel ./.venv/bin/python -m evals.calibrate generate
+    set -a; . ./.env; set +a; ./.venv/bin/python -m evals.calibrate generate
     # ...label the file...
-    set -a; . ./.env; set +a; MODEL_PROVIDER=vercel ./.venv/bin/python -m evals.calibrate judge
+    set -a; . ./.env; set +a; ./.venv/bin/python -m evals.calibrate judge
 """
 
 import argparse

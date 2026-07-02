@@ -56,10 +56,9 @@ PRICING = {
     "opus": {"model": "claude-opus-4-8", "input": 5.00, "output": 25.00},
 }
 
-# Model provider selection (resolved at runtime by agents/providers/factory.py, NOT here —
-# workflows import this module, so it must stay free of env reads / I/O). Bring-your-own:
-# set MODEL_PROVIDER=anthropic|vercel. Same model tiers either way.
-DEFAULT_MODEL_PROVIDER = "anthropic"
+# Reasoning-plane provider: **Vercel AI Gateway only** (decided 2026-07-02 — one provider
+# per plane; the earlier anthropic/vercel matrix is retired). The coding plane runs on the
+# Claude subscription via the Agent SDK (CODING_* knobs below), never through the gateway.
 VERCEL_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 VERCEL_MODELS = {  # tier -> gateway model id (gateway uses dot versioning for X.Y models)
     "haiku": "anthropic/claude-haiku-4.5",

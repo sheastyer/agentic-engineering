@@ -10,7 +10,6 @@ from types import SimpleNamespace
 import pytest
 
 from orchestrator.agents.provider import ProviderResponse
-from orchestrator.agents.providers.anthropic_provider import AnthropicProvider
 from orchestrator.agents.providers.factory import build_provider
 from orchestrator.agents.providers.vercel_provider import VercelGatewayProvider
 from orchestrator.agents.registry import get_persona
@@ -167,39 +166,6 @@ def test_runner_bounded_reask_then_hard_fail():
     assert len(provider.calls) == 2  # triage max_reask=1 -> 2 attempts
 
 
-# --- anthropic provider --------------------------------------------------------
-def _usage(inp, out, cache=0):
-    return SimpleNamespace(input_tokens=inp, output_tokens=out, cache_read_input_tokens=cache)
-
-
-def test_anthropic_provider_sets_thinking_effort_for_reasoning_tiers_only():
-    parsed = TriageOutput(kind="feature", priority="P2", needs_clarification=False, rationale="r")
-
-    class FakeMessages:
-        def __init__(self):
-            self.calls = []
-
-        def parse(self, **kw):
-            self.calls.append(kw)
-            return SimpleNamespace(parsed_output=parsed, usage=_usage(10, 5))
-
-    fm = FakeMessages()
-    provider = AnthropicProvider(messages_client=fm)
-    msgs = [{"role": "user", "content": "x"}]
-
-    provider.generate_structured(tier="opus", system="s", messages=msgs,
-                                 output_model=TriageOutput, effort="high", max_tokens=100)
-    assert fm.calls[-1]["model"] == "claude-opus-4-8"
-    assert fm.calls[-1]["thinking"] == {"type": "adaptive"}
-    assert fm.calls[-1]["output_config"]["effort"] == "high"
-
-    provider.generate_structured(tier="haiku", system="s", messages=msgs,
-                                 output_model=TriageOutput, effort="low", max_tokens=100)
-    assert fm.calls[-1]["model"] == "claude-haiku-4-5"
-    assert "thinking" not in fm.calls[-1]
-    assert "output_config" not in fm.calls[-1]
-
-
 # --- vercel gateway provider ---------------------------------------------------
 def test_vercel_provider_builds_openai_request_and_validates_content():
     payload_json = TriageOutput(
@@ -321,9 +287,13 @@ def test_vercel_provider_still_returns_none_payload_on_genuine_garbage():
 
 
 # --- provider factory ----------------------------------------------------------
-def test_factory_selects_provider_and_rejects_unknown():
-    assert build_provider("anthropic").name == "anthropic"
+def test_factory_is_vercel_only_and_rejects_unknown():
+    # The reasoning plane is vercel-only (2026-07-02): default and explicit both resolve
+    # to the gateway; a retired provider name fails loudly instead of falling back.
+    assert build_provider().name == "vercel"
     assert build_provider("vercel").name == "vercel"
+    with pytest.raises(ValueError):
+        build_provider("anthropic")
     with pytest.raises(ValueError):
         build_provider("nope")
 

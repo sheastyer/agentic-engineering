@@ -1,9 +1,15 @@
-"""Temporal worker entrypoint (M0/M1).
+"""Temporal worker entrypoint.
 
 Connects to the local dev server and serves every workflow + activity on the org task
 queue. Run alongside `temporal server start-dev`:
 
     ./.venv/bin/python -m worker.main
+
+Two switches, one per plane (CLAUDE.md §2):
+- ORG_LIVE=1     — every reasoning persona runs live on the Vercel AI Gateway.
+- USE_AGENT_CODING=1 — the engineering pod runs a real coding agent on the Claude
+  subscription (CODING_AGENT/CODING_SANDBOX/CODING_PR_TARGET knobs).
+Neither set = $0 stubs (the test/dev default).
 """
 
 import asyncio
@@ -29,73 +35,38 @@ ALL_WORKFLOWS = [
 
 
 def build_activities() -> list:
-    """Stub activities by default ($0). Env toggles swap in real runner-backed ones, one
-    at a time, as they're validated in M3 — the swap is by activity name."""
+    """Stub activities by default ($0). ORG_LIVE=1 swaps in every live reasoning persona;
+    USE_AGENT_CODING=1 swaps in the coding plane. The swap is by activity name, so the
+    workflows never change. (The per-persona USE_AGENT_* flags were M3 scaffolding for
+    validating personas one at a time; every persona is validated, so they're retired.)"""
     activities = list(ALL_ACTIVITIES)
-    provider = os.environ.get("MODEL_PROVIDER", "anthropic")
-    if os.environ.get("USE_AGENT_BRIEF"):
-        from orchestrator.activities.agent_backed import pm_draft_brief_agent
 
-        activities = _replace_by_name(activities, "pm_draft_brief", pm_draft_brief_agent)
-        logging.info("USE_AGENT_BRIEF: real PM brief authoring (Opus) via MODEL_PROVIDER=%s", provider)
-    if os.environ.get("USE_AGENT_TRIAGE"):
-        from orchestrator.activities.agent_backed import triage_feedback_agent
+    if os.environ.get("ORG_LIVE"):
+        # Fail fast at startup, not at the first activity: the reasoning plane is
+        # vercel-only, so a missing gateway credential can never produce a live run.
+        if not (os.environ.get("AI_GATEWAY_API_KEY") or os.environ.get("VERCEL_OIDC_TOKEN")):
+            raise SystemExit(
+                "ORG_LIVE=1 but AI_GATEWAY_API_KEY / VERCEL_OIDC_TOKEN is not set — the "
+                "reasoning plane runs on the Vercel AI Gateway (see .env.example)."
+            )
+        from orchestrator.activities import agent_backed as ab
 
-        activities = _replace_by_name(activities, "triage_feedback", triage_feedback_agent)
-        logging.info("USE_AGENT_TRIAGE: real triage via MODEL_PROVIDER=%s", provider)
-    if os.environ.get("USE_AGENT_COUNCIL"):
-        from orchestrator.activities.agent_backed import council_agent_vote_agent
+        for stub_name, live in [
+            ("triage_feedback", ab.triage_feedback_agent),
+            ("pm_draft_brief", ab.pm_draft_brief_agent),
+            ("council_agent_vote", ab.council_agent_vote_agent),
+            ("consumer_research_persona", ab.consumer_research_persona_agent),
+            ("pm_write_prd", ab.pm_write_prd_agent),
+            ("pm_revise_prd", ab.pm_revise_prd_agent),
+            ("architect_review_prd", ab.architect_review_prd_agent),
+            ("architect_plan_stories", ab.architect_plan_stories_agent),
+            ("pm_prioritize_bug", ab.pm_prioritize_bug_agent),
+            ("review_diff", ab.review_diff_agent),
+            ("qa_review", ab.qa_review_agent),
+        ]:
+            activities = _replace_by_name(activities, stub_name, live)
+        logging.info("ORG_LIVE: all reasoning personas live on the Vercel AI Gateway")
 
-        activities = _replace_by_name(activities, "council_agent_vote", council_agent_vote_agent)
-        logging.info("USE_AGENT_COUNCIL: real council votes via MODEL_PROVIDER=%s", provider)
-    if os.environ.get("USE_AGENT_RESEARCH"):
-        from orchestrator.activities.agent_backed import consumer_research_persona_agent
-
-        activities = _replace_by_name(
-            activities, "consumer_research_persona", consumer_research_persona_agent
-        )
-        logging.info("USE_AGENT_RESEARCH: real synthetic-user panel via MODEL_PROVIDER=%s", provider)
-    if os.environ.get("USE_AGENT_PRD_REVISE"):
-        from orchestrator.activities.agent_backed import pm_revise_prd_agent
-
-        activities = _replace_by_name(activities, "pm_revise_prd", pm_revise_prd_agent)
-        logging.info("USE_AGENT_PRD_REVISE: real PRD revision via MODEL_PROVIDER=%s", provider)
-    if os.environ.get("USE_AGENT_PRD_AUTHOR"):
-        from orchestrator.activities.agent_backed import pm_write_prd_agent
-
-        activities = _replace_by_name(activities, "pm_write_prd", pm_write_prd_agent)
-        logging.info("USE_AGENT_PRD_AUTHOR: real PRD authoring (Opus) via MODEL_PROVIDER=%s", provider)
-    if os.environ.get("USE_AGENT_ARCH_REVIEW"):
-        from orchestrator.activities.agent_backed import architect_review_prd_agent
-
-        activities = _replace_by_name(activities, "architect_review_prd", architect_review_prd_agent)
-        logging.info("USE_AGENT_ARCH_REVIEW: real architect PRD review (Opus) via MODEL_PROVIDER=%s", provider)
-    if os.environ.get("USE_AGENT_STORY_PLAN"):
-        from orchestrator.activities.agent_backed import architect_plan_stories_agent
-
-        activities = _replace_by_name(activities, "architect_plan_stories", architect_plan_stories_agent)
-        logging.info("USE_AGENT_STORY_PLAN: real architect story planning (Opus) via MODEL_PROVIDER=%s", provider)
-    if os.environ.get("USE_AGENT_BUG_PRIORITY"):
-        from orchestrator.activities.agent_backed import pm_prioritize_bug_agent
-
-        activities = _replace_by_name(activities, "pm_prioritize_bug", pm_prioritize_bug_agent)
-        logging.info("USE_AGENT_BUG_PRIORITY: real PM bug prioritization (Haiku) via MODEL_PROVIDER=%s", provider)
-    if os.environ.get("USE_AGENT_REVIEW"):
-        from orchestrator.activities.agent_backed import review_diff_agent
-
-        activities = _replace_by_name(activities, "review_diff", review_diff_agent)
-        logging.info(
-            "USE_AGENT_REVIEW: real pre-PR code review (Sonnet, reasoning) via MODEL_PROVIDER=%s",
-            provider,
-        )
-    if os.environ.get("USE_AGENT_QA"):
-        from orchestrator.activities.agent_backed import qa_review_agent
-
-        activities = _replace_by_name(activities, "qa_review", qa_review_agent)
-        logging.info(
-            "USE_AGENT_QA: real functional QA (Sonnet, reasoning) via MODEL_PROVIDER=%s",
-            provider,
-        )
     if os.environ.get("USE_AGENT_CODING"):
         from orchestrator.activities.coding_backed import (
             await_ci_agent,
@@ -118,11 +89,10 @@ def build_activities() -> list:
         activities = _replace_by_name(activities, "deploy", deploy_agent)
         logging.info(
             "USE_AGENT_CODING: real coding pod — agent=%s sandbox=%s pr_target=%s "
-            "(coding draws on the Claude subscription; reasoning via MODEL_PROVIDER=%s)",
+            "(coding draws on the Claude subscription)",
             os.environ.get("CODING_AGENT", "mock"),
             os.environ.get("CODING_SANDBOX", "local"),
             os.environ.get("CODING_PR_TARGET", "local"),
-            provider,
         )
     return activities
 

@@ -161,8 +161,8 @@ def triage_with_runner(provider: ModelProvider, event: FeedbackEvent) -> Triage:
 
 @activity.defn(name="triage_feedback")
 async def triage_feedback_agent(event: FeedbackEvent) -> Triage:
-    """Live triage. Provider chosen by MODEL_PROVIDER env (default anthropic = your
-    subscription). Registered under the stub's name so the M3 swap is a one-liner."""
+    """Live triage on the Vercel AI Gateway (the only reasoning-plane provider).
+    Registered under the stub's name so the swap is a one-liner."""
     return triage_with_runner(build_provider(), event)
 
 
@@ -492,7 +492,7 @@ def review_diff_with_runner(
 @activity.defn(name="review_diff")
 async def review_diff_agent(plan: StoryPlan, story_result: StoryResult) -> ReviewResult:
     """Live code review of the pod's diff. Registered under the stub's name so the swap is a
-    one-liner. Reasoning plane (MODEL_PROVIDER), not the coding subscription."""
+    one-liner. Reasoning plane (Vercel gateway), not the coding subscription."""
     return review_diff_with_runner(build_provider(), plan, story_result)
 
 
@@ -541,5 +541,5 @@ def qa_review_with_runner(
 @activity.defn(name="qa_review")
 async def qa_review_agent(project: str, story_results: list[StoryResult]) -> QAResult:
     """Live functional QA over the pod's attempt(s). Registered under the stub's name so the
-    swap is a one-liner. Reasoning plane (MODEL_PROVIDER), not the coding subscription."""
+    swap is a one-liner. Reasoning plane (Vercel gateway), not the coding subscription."""
     return qa_review_with_runner(build_provider(), project, story_results)
