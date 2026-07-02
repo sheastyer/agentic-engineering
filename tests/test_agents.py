@@ -286,6 +286,31 @@ def test_vercel_provider_still_returns_none_payload_on_genuine_garbage():
     assert resp.payload is None
 
 
+# --- activity execution model ---------------------------------------------------
+def test_reasoning_activities_are_sync_so_they_run_off_the_event_loop():
+    """The live reasoning wrappers make blocking HTTP calls (sync openai client), so they
+    must be SYNC activities (thread-pool via the worker's activity_executor) — an async def
+    here runs ON the event loop and starves workflow tasks (Temporal deadlock-detector
+    [TMPRL1101], observed repeatedly in live runs 2026-07-02). The coding-plane activities
+    genuinely await the Agent SDK and stay async. Pins both, so a refactor can't silently
+    put blocking calls back on the loop."""
+    import inspect
+
+    from orchestrator.activities import agent_backed as ab
+    from orchestrator.activities import coding_backed as cb
+
+    reasoning = [
+        ab.triage_feedback_agent, ab.pm_draft_brief_agent, ab.council_agent_vote_agent,
+        ab.consumer_research_persona_agent, ab.pm_write_prd_agent, ab.pm_revise_prd_agent,
+        ab.architect_review_prd_agent, ab.architect_plan_stories_agent,
+        ab.pm_prioritize_bug_agent, ab.review_diff_agent, ab.qa_review_agent,
+    ]
+    for fn in reasoning:
+        assert not inspect.iscoroutinefunction(fn), f"{fn.__name__} must be sync (thread-pool)"
+    for fn in (cb.implement_stories_agent, cb.revise_after_review_agent, cb.open_pr_agent):
+        assert inspect.iscoroutinefunction(fn), f"{fn.__name__} should stay async (awaits the SDK)"
+
+
 # --- provider factory ----------------------------------------------------------
 def test_factory_is_vercel_only_and_rejects_unknown():
     # The reasoning plane is vercel-only (2026-07-02): default and explicit both resolve
