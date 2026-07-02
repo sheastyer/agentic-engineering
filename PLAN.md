@@ -58,6 +58,31 @@ weighs the diff + build/test status, not just the developer's summary; `qa_revie
 meal-planner profile records the AI SDK v6 `maxOutputTokens` convention. Validated by a live
 guardrail run (meal-planner #13, ~$0.97). **102 tests green.**
 
+**Update (2026-07-02) — steel-thread simplification:** the org was carrying complexity the
+steel thread didn't need; four structural changes landed (stacked on the vercel reviewer
+strict-schema fix, PR #13):
+(a) **Vercel-only reasoning plane** — the `anthropic` Messages-API provider is deleted (it
+was a dead default: no API credit, and the subscription doesn't fund it); `build_provider()`
+no longer reads `MODEL_PROVIDER`; the worker fails fast if `ORG_LIVE=1` without
+`AI_GATEWAY_API_KEY`. Coding stays on the Claude subscription (Agent SDK) — one provider
+per plane.
+(b) **One live switch** — the eleven per-persona `USE_AGENT_*` flags (M3 scaffolding;
+every persona individually validated) collapsed into `ORG_LIVE=1`; `USE_AGENT_CODING`
+remains the coding-plane switch.
+(c) **Bug path rides the pod** — `BugWorkflow` executes `EngineeringPodWorkflow` as a child
+with a one-story plan (report body as `StoryPlan.context`); `fix_bug`/`review_fix` are
+deleted. Bugs now get the review loop, functional QA, a real PR, the CI gate, and the
+idempotent merge. (The old live bug path produced a diff that died in the activity — no PR,
+empty deploy ref.) Bug budget ceiling $0.50 → $2.50 (a coding pass alone is ~$1–2).
+(d) **QA is a hard, honest gate** — parents halt at `Status.QA_FAILED` before the deploy
+gate (symmetric with `CI_FAILED`; previously the QA verdict was computed then ignored).
+Profiles declare `stack.sandbox_tests=False` when their suite can't run in the sandbox
+(meal-planner does), which makes in-sandbox QA report "unavailable" (non-blocking; CI is
+the objective gate) instead of the misleading "failed" that poisoned every meal-planner QA
+read; `StoryResult.build_status` carries the honest verdict to the QA agent.
+`MAX_QA_FIX_PASSES` back to 1 org-wide (the 0 was meal-planner tuning leaked into org
+config). **115 tests green** (incl. a bug-path replay test covering the pod child).
+
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`
   & `EngineeringPod` children. All stages currently call **stub** activities

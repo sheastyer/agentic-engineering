@@ -14,16 +14,18 @@ and tell the user.
 
 ## What "run" means here (defaults)
 
-- **Default mode = Full live → real PR.** Reasoning on the Vercel gateway, coding on the
-  Claude subscription, opens a **real GitHub PR** on the target. Real cost (~$2/feature) and a
-  real outward side-effect.
+- **Default mode = Full live → real PR.** Reasoning on the Vercel gateway (`ORG_LIVE=1`),
+  coding on the Claude subscription (`USE_AGENT_CODING=1`), opens a **real GitHub PR** on the
+  target. Real cost (~$2/feature, ~$1.5–2.5/bug — bugs ride the same engineering pod) and a
+  real outward side-effect. **Both paths (feature and `--bug`) open + merge a PR.**
 - The skill **manages infra itself** (Temporal dev server + worker), starting them if down.
 - `cli.run` auto-plays every human gate (council, budget, sign-off, deploy) — a steel-thread run.
 
 Other modes the user may ask for:
 - **Cheap** ("dry run", "no PR", "cheap"): live reasoning, **mock coding**, no PR
   (`CODING_PR_TARGET=local`, drop `USE_AGENT_CODING`). ~$0.25.
-- **$0 stub** ("stub", "just the flow"): no `USE_AGENT_*` flags at all. 0 tokens, no PR.
+- **$0 stub** ("stub", "just the flow"): drop both `ORG_LIVE` and `USE_AGENT_CODING`.
+  0 tokens, no PR.
 
 ## Step 0 — Parse the request and confirm (do this first)
 
@@ -72,15 +74,15 @@ calls. The repo venv is `./.venv`; Python 3.14.
    set -a; . ./.env; set +a
    env -u CLAUDECODE -u CLAUDE_CODE_SSE_PORT -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION \
        -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_EXECPATH -u AI_AGENT -u CLAUDE_EFFORT -u ANTHROPIC_API_KEY \
-     MODEL_PROVIDER=vercel USE_AGENT_BRIEF=1 USE_AGENT_COUNCIL=1 USE_AGENT_PRD_AUTHOR=1 \
-       USE_AGENT_PRD_REVISE=1 USE_AGENT_ARCH_REVIEW=1 USE_AGENT_RESEARCH=1 USE_AGENT_STORY_PLAN=1 \
-       USE_AGENT_BUG_PRIORITY=1 USE_AGENT_TRIAGE=1 USE_AGENT_REVIEW=1 USE_AGENT_QA=1 \
+     ORG_LIVE=1 \
        USE_AGENT_CODING=1 CODING_AGENT=claude CODING_SANDBOX=container CODING_PR_TARGET=github \
        CODING_PERMISSION_MODE=bypassPermissions \
      ./.venv/bin/python -m worker.main > .localdata/worker.log 2>&1
    ```
-   Run with `run_in_background`. For **cheap** mode, drop `USE_AGENT_CODING …` and set
-   `CODING_PR_TARGET=local`; for **$0 stub**, drop all `USE_AGENT_*` flags.
+   Run with `run_in_background`. `ORG_LIVE=1` = every reasoning persona live on the Vercel
+   gateway (needs `AI_GATEWAY_API_KEY`; the worker fails fast at startup without it).
+   For **cheap** mode, drop `USE_AGENT_CODING …` and set `CODING_PR_TARGET=local`; for
+   **$0 stub**, drop `ORG_LIVE` too.
    - `CODING_PR_TARGET=local` = no-push dry run; the coding cost caps live in `config.py`
      (`CODING_MAX_TURNS`/`CODING_MAX_BUDGET_USD`) — don't lower them so far the agent can't
      finish (see memory `coding-pod-cost-cap`).
@@ -108,6 +110,9 @@ and `.localdata/worker.log`). Watch for and react to:
 - A **failed story** / partial diff / soft-stop (turn or budget cap hit) → the run continues
   with a partial result; record it for the report. A coding error returns a *failed story*, it
   must not raise — if you see a raise/retry storm, that's a regression worth flagging.
+- A terminal **QA_FAILED** or **CI_FAILED** → the org halted before the deploy gate on a red
+  QA/CI verdict (by design — it never merges past red). Report it honestly with the verdict
+  notes; do not re-run to force a green.
 - If a step fails 2–3× the same way, **stop and report** to the user rather than looping.
 
 Do not lower the coding caps or strip safety to force a green run; report honestly if it fell short.
