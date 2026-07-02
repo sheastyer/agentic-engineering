@@ -1,0 +1,119 @@
+{
+  "workflow_id": "feedback-demo-7a29ae49",
+  "project": "meal-planner",
+  "result": {
+    "cost_tokens": 24546,
+    "cost_usd": 0.993807,
+    "feedback_id": "demo-7a29ae49",
+    "stage_log": [
+      "triage",
+      "dedupe",
+      "pm_prioritize",
+      "engineering_pod",
+      "deploy_approval",
+      "deploy"
+    ],
+    "status": "shipped",
+    "summary": "Bug fix shipped (https://github.com/sheastyer/meal-planner/pull/50)."
+  },
+  "scopes": {
+    "parent": [
+      {
+        "activity": "triage_feedback",
+        "payload": {
+          "cost_tokens": 610,
+          "cost_usd": 0.00097,
+          "kind": "bug",
+          "needs_clarification": false,
+          "priority": "P2"
+        }
+      },
+      {
+        "activity": "dedupe_check",
+        "payload": {
+          "cost_tokens": 30,
+          "cost_usd": 0.0,
+          "duplicate_of": "",
+          "is_duplicate": false
+        }
+      },
+      {
+        "activity": "pm_prioritize_bug",
+        "payload": {
+          "cost_tokens": 593,
+          "cost_usd": 0.000769,
+          "priority": "P2",
+          "rationale": "404 page styling is a cosmetic issue with no impact on core meal-planning functionality; agrees with triage read of P2."
+        }
+      },
+      {
+        "activity": "deploy",
+        "payload": {
+          "cost_tokens": 0,
+          "cost_usd": 0.0,
+          "deployed": true,
+          "note": "merged via gh",
+          "ref": "agentic/bugfix-demo-7a29ae49-7a29ae49"
+        }
+      }
+    ],
+    "research": [],
+    "pod": [
+      {
+        "activity": "implement_stories",
+        "payload": {
+          "build_status": "unavailable: target tests are not runnable in the sandbox (per the project profile); the PR's CI is the objective gate",
+          "cost_tokens": 17366,
+          "cost_usd": 0.9641949999999998,
+          "diff": "diff --git a/app/not-found.tsx b/app/not-found.tsx\nnew file mode 100644\nindex 0000000..d36a078\n--- /dev/null\n+++ b/app/not-found.tsx\n@@ -0,0 +1,89 @@\n+import Link from 'next/link'\n+import type { CSSProperties } from 'react'\n+import { displayType } from '@/components/logo'\n+import { SearchSpot } from '@/components/spot-illustrations'\n+import { Screen } from '@/components/ui'\n+\n+// Next's built-in special file: rendered for any unmatched route (and\n+// wherever `notFound()` is called) inside the existing RootLayout, so header\n+// nav / footer chrome is preserved \u2014 only the body swaps in. Without this\n+// file, broken/outdated links fell through to Next's default plain-text 404.\n+// A plain long-form screen (no pinned bottom bar), matching household/recipe\n+// detail \u2014 see CLAUDE.md's mobile ergonomics rule 3.\n+export default function NotFound() {\n+  return (\n+    <Screen>\n+      <div style={contentStyle}>\n+        <SearchSpot />\n+        <div style={titleStyle}>This page wandered off</div>\n+        <div style={bodyStyle}>\n+          The link you followed doesn&rsquo;t match anything here \u2014 it may be outdated or\n+          mistyped.\n+        </div>\n+        <div\n+          style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%', marginTop: 4 }}\n+        >\n+          <Link href=\"/calendar\" style={ctaPrimaryStyle}>\n+            Back to your week\n+          </Link>\n+          <Link href=\"/cookbook\" style={ctaSecondaryStyle}>\n+            Browse your cookbook\n+          </Link>\n+        </div>\n+      </div>\n+    </Screen>\n+  )\n+}\n+\n+const contentStyle: CSSProperties = {\n+  flex: 1,\n+  display: 'flex',\n+  flexDirection: 'column',\n+  alignItems: 'center',\n+  justifyContent: 'center',\n+  textAlign: 'center',\n+  gap: 12,\n+  padding: '48px 22px 44px',\n+}\n+\n+const titleStyle: CSSProperties = {\n+  ...displayType,\n+  fontSize: 20,\n+  fontWeight: 600,\n+  color: 'var(--text)',\n+}\n+\n+const bodyStyle: CSSProperties = {\n+  fontSize: 14,\n+  color: 'var(--text-2)',\n+  lineHeight: 1.5,\n+  maxWidth: 300,\n+}\n+\n+const ctaPrimaryStyle: CSSProperties = {\n+  display: 'flex',\n+  alignItems: 'center',\n+  justifyContent: 'center',\n+  height: 50,\n+  borderRadius: 14,\n+  background: 'var(--accent)',\n+  color: 'var(--on-accent)',\n+  fontSize: 15.5,\n+  fontWeight: 600,\n+  textDecoration: 'none',\n+  boxShadow: '0 6px 16px var(--accent-shadow)',\n+}\n+\n+const ctaSecondaryStyle: CSSProperties = {\n+  display: 'flex',\n+  alignItems: 'center',\n+  justifyContent: 'center',\n+  height: 50,\n+  borderRadius: 14,\n+  background: 'var(--surface)',\n+  color: 'var(--accent)',\n+  fontSize: 15,\n+  fontWeight: 600,\n+  border: '1.5px solid var(--accent)',\n+  textDecoration: 'none',\n+}\n",
+          "pr_ref": "",
+          "status": "done",
+          "story_id": "bugfix-demo-7a29ae49",
+          "summary": "Clean \u2014 only the new `app/not-found.tsx` file remains, uncommitted as required.\n\n## Summary\n\n**Root cause:** the app had no `app/not-found.tsx`, so any unmatched/outdated link fell through to Next.js's default plain-text 404 page instead of the app's design system.\n\n**Fix:** added `app/not-found.tsx`, a server component reusing existing design primitives (`Screen` from `components/ui.tsx`, `SearchSpot` illustration, `displayType` from `components/logo.tsx`) and the same empty-state visual langua",
+          "tier": "sonnet"
+        }
+      },
+      {
+        "activity": "qa_review",
+        "payload": {
+          "cost_tokens": 2767,
+          "cost_usd": 0.011373,
+          "notes": "Diff adds a self-contained app/not-found.tsx using existing design primitives (Screen, SearchSpot, displayType), which directly substantiates the claimed fix for the missing 404 page. No AI SDK usage or other risky patterns present; change is minimal and scoped as claimed, though actual CI build success can't be confirmed here and should be checked at the PR gate.",
+          "passed": true
+        }
+      },
+      {
+        "activity": "review_diff",
+        "payload": {
+          "approved": true,
+          "cost_tokens": 3180,
+          "cost_usd": 0.0165,
+          "notes": "Adds a single `app/not-found.tsx` that reuses existing design primitives (Screen, SearchSpot, displayType) to replace the default plain-text 404, matching the app's empty-state visual language and following the mobile long-form layout convention; change is minimal, scoped, and directly addresses the reported bug.",
+          "required_changes": []
+        }
+      },
+      {
+        "activity": "open_pr",
+        "payload": {
+          "branch": "agentic/bugfix-demo-7a29ae49-7a29ae49",
+          "cost_tokens": 0,
+          "cost_usd": 0.0,
+          "note": "opened via gh",
+          "opened": true,
+          "url": "https://github.com/sheastyer/meal-planner/pull/50"
+        }
+      },
+      {
+        "activity": "await_ci",
+        "payload": {
+          "cost_tokens": 0,
+          "cost_usd": 0.0,
+          "failing_summary": "",
+          "passed": true,
+          "status": "passed",
+          "url": "https://github.com/sheastyer/meal-planner/pull/50"
+        }
+      }
+    ]
+  }
+}
