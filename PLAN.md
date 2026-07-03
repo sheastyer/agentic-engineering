@@ -124,9 +124,17 @@ clarification gate is notify-only (free text answers via CLI/signal). `slack_sdk
 when `ORG_SLACK` is set (`--auto-gates`/`--no-auto-gates` to override). Workflow shape
 changed (a new activity before each gate) — in-flight executions were drained rather than
 `workflow.patched()` (local dev server). **148 tests green** incl. replay with the notify
-activity in the histories. Remaining for the M5 human-I/O exit: the `MAN` round-trip (create
-the Slack app: Socket Mode on, `chat:write`, interactivity; fill `SLACK_*` in `.env`) and a
-live steel-thread run with the deploy gate approved by a real click.
+activity in the histories. ✅ **MAN round-trip passed live (2026-07-02):** Slack app created
+(Socket Mode, interactivity, `chat:write` + `files:write`), and a watch-only stub run
+(`feedback-demo-1ca891f3`) was driven entirely from the channel — 12/12 gate+progress
+notifications delivered onto one thread (both PDFs uploaded), all three gates (council,
+sign-off, deploy) approved by real button clicks, approver identity (`shea.styer`) recorded
+in the stage log, the driver never auto-signalled. Remaining for the M5 human-I/O exit: a
+live steel-thread run (real reasoning + coding + PR) with the deploy gate approved from Slack.
+Ops gotcha from the round-trip: stale workers on the shared task queue steal notify
+activities (a stub worker silently swallowed the first attempt's Slack posts) — check
+`ps | grep -i worker.main` (capital-P `Python` evades `pgrep -f "python -m worker.main"`)
+and kill stale PIDs before a live run.
 
 **Update (2026-07-02) — per-run Slack progress thread:** Slack is now the org's primary
 observability surface, not just its gate transport. Each run posts a **thread** in the
@@ -627,9 +635,10 @@ move fast on later milestones.
   channel — the loop closes.
 - **Work:** implement the meal-planner **intake adapter** (per its profile) → normalized
   `FeedbackEvent` → router; ✅ wire the chosen **human I/O channel** (D1: Slack) to the
-  gate signals — **built 2026-07-02** (`orchestrator/humanio/`: `notify_gate` activity +
-  Socket Mode listener; see the current-state update). MAN round-trip + live run pending
-  Slack app credentials.
+  gate signals — **built 2026-07-02** (`orchestrator/humanio/`: `notify_gate` +
+  `notify_progress` activities, per-run thread w/ PDF artifacts, Socket Mode listener) and
+  **MAN round-trip passed live the same day** (all gates approved by real clicks, identity
+  recorded; see the current-state update). Remaining: live steel-thread run with Slack gates.
 - **Evaluations:**
   - `DET` intake adapter: a feedback record from the app normalizes correctly and starts
     the right workflow (idempotent on feedback id).
@@ -653,7 +662,7 @@ move fast on later milestones.
 
 | ID | Decision | Needed by | Status |
 |---|---|---|---|
-| D1 | Human I/O channel (email / Slack / dashboard) | M5 | ✅ **Slack** (Socket Mode — no public ingress needed). **Built 2026-07-02** (`orchestrator/humanio/` + `notify_gate`; spec: [`docs/handoff-slack-gates.md`](./docs/handoff-slack-gates.md)); MAN round-trip pending Slack app credentials |
+| D1 | Human I/O channel (email / Slack / dashboard) | M5 | ✅ **Slack** (Socket Mode — no public ingress needed). **Built + MAN round-trip passed live 2026-07-02** (`orchestrator/humanio/`; gates approved by real clicks, approver identity recorded; spec: [`docs/handoff-slack-gates.md`](./docs/handoff-slack-gates.md)) |
 | D2 | Model IDs + pricing | M2 | ✅ `claude-haiku-4-5` $1/$5 · `claude-sonnet-5` $3/$15 (intro $2/$10 to 2026-08-31) · `claude-opus-4-8` $5/$25 (per 1M tok) |
 | D3 | Billing path | M2/M4 | ✅ **API credits / pay-as-you-go** (verified live 2026-06-14: Claude.ai subscription does NOT fund the Developer-Platform API — `400 credit balance too low`). Need Console API credits regardless of OAuth-vs-key; Vercel gateway is an alt with its own billing |
 | D4 | Repo handling — managed per-run workspace | M4 | ✅ yes (per-run workspace) |
