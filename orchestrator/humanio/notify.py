@@ -16,7 +16,12 @@ import re
 
 from temporalio import activity
 
-from orchestrator.humanio.gates import build_blocks, fallback_text, render_progress_text
+from orchestrator.humanio.gates import (
+    build_blocks,
+    build_progress_blocks,
+    fallback_text,
+    render_progress_text,
+)
 from orchestrator.humanio.pdf import markdown_to_pdf
 from orchestrator.shared.types import GateNotice, NotifyResult, ProgressNotice
 
@@ -72,6 +77,7 @@ def notify_progress_with_client(notice: ProgressNotice, client, channel: str) ->
         resp = client.chat_postMessage(
             channel=channel,
             text=render_progress_text(notice),
+            blocks=build_progress_blocks(notice),
             thread_ts=notice.thread_ts or None,
         )
         ts = resp.get("ts") or ""

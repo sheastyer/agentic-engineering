@@ -102,7 +102,7 @@ class BugWorkflow:
         # One terminal post covers every exit path (shipped/duplicate/held/over-budget/...).
         await self._notify_progress(
             "done",
-            [f"status: {result.status}", clip(result.summary), f"total cost: ${result.cost_usd:.4f}"],
+            [f"status: {result.status} · total cost ${result.cost_usd:.4f}", clip(result.summary)],
         )
         return result
 
@@ -113,7 +113,7 @@ class BugWorkflow:
         # Root of the run's Slack thread: the bug report itself, the moment work starts.
         await self._notify_progress(
             "feedback_received",
-            [f"kind: {event.kind}", f"from: {event.submitted_by}", clip(event.body)],
+            [f"{event.kind} from {event.submitted_by}", clip(event.body)],
         )
 
         triage = await self._act(act.triage_feedback, event, stage="triage")
@@ -124,8 +124,8 @@ class BugWorkflow:
         await self._notify_progress(
             "triage",
             [
-                f"priority: {triage.priority}",
-                f"needs clarification: {'yes' if triage.needs_clarification else 'no'}",
+                f"priority: {triage.priority}"
+                + (" · needs clarification" if triage.needs_clarification else "")
             ],
         )
 
@@ -175,15 +175,16 @@ class BugWorkflow:
         self._cost += pod.cost_tokens
         self._cost_usd += pod.cost_usd
         await self._check_budget()
+        # Verdicts on one line — the deploy gate card that follows carries the detail.
         await self._notify_progress(
             "engineering",
             [
                 f"coding: {pod.story_result.status}"
                 + (f" ({pod.story_result.tier})" if pod.story_result.tier else ""),
                 f"PR: {pod.pr_url or pod.branch}",
-                f"QA: {'passed' if pod.qa.passed else 'failed'} — {clip(pod.qa.notes)}",
-                f"review: {'approved' if pod.review_approved else 'unresolved'}",
-                f"CI: {clip(pod.ci_notes) or 'n/a'}",
+                f"QA {'passed' if pod.qa.passed else 'failed'}"
+                f" · review {'approved' if pod.review_approved else 'unresolved'}"
+                f" · CI {clip(pod.ci_notes) or 'n/a'}",
             ],
         )
 

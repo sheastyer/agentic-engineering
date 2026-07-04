@@ -15,6 +15,7 @@ from orchestrator.humanio.gates import (
     GATE_BUTTONS,
     GateAction,
     build_blocks,
+    build_progress_blocks,
     fallback_text,
     render_progress_text,
     signal_for,
@@ -44,10 +45,15 @@ def _notice(gate: str = "deploy") -> GateNotice:
 # --- outbound: notice -> blocks ---------------------------------------------------
 def test_build_blocks_carries_context_and_decodable_buttons():
     blocks = build_blocks(_notice("deploy"))
-    header, section, actions = blocks
-    assert header["type"] == "header" and "Deploy approval" in header["text"]["text"]
-    assert "feedback-123" in section["text"]["text"]
+    section, actions, footer = blocks
+    assert section["type"] == "section" and "Deploy approval" in section["text"]["text"]
     assert "PR: https://github.com/x/y/pull/49" in section["text"]["text"]
+    # Run metadata is demoted to the small context footer, not the message body.
+    footer_text = footer["elements"][0]["text"]
+    assert footer["type"] == "context"
+    assert "feedback-123" in footer_text
+    assert "meal-planner" in footer_text
+    assert "$1.8700" in footer_text
     assert [e["text"]["text"] for e in actions["elements"]] == ["Approve deploy", "Hold"]
     # Round-trip: each button's value is exactly what the listener decodes.
     for element, (_, decision, _style) in zip(actions["elements"], GATE_BUTTONS["deploy"]):
@@ -57,7 +63,7 @@ def test_build_blocks_carries_context_and_decodable_buttons():
 
 def test_clarification_gate_is_notify_only():
     blocks = build_blocks(_notice("clarification"))
-    assert [b["type"] for b in blocks] == ["header", "section"]  # no buttons to forge
+    assert [b["type"] for b in blocks] == ["section", "context"]  # no buttons to forge
 
 
 def test_fallback_text_names_gate_and_workflow():
@@ -132,6 +138,7 @@ def test_progress_root_post_anchors_the_thread():
     (post,) = client.posts
     assert post["thread_ts"] is None  # the root IS the thread
     assert "Add dark mode" in post["text"] and "feedback-123" in post["text"]
+    assert post["blocks"] == build_progress_blocks(_progress("feedback_received", thread_ts=""))
 
 
 def test_progress_reply_threads_onto_the_anchor():
@@ -140,6 +147,7 @@ def test_progress_reply_threads_onto_the_anchor():
     (post,) = client.posts
     assert post["thread_ts"] == "1111.2222"
     assert "PM brief" in post["text"]
+    assert post["blocks"]
 
 
 def test_progress_document_uploads_pdf_into_the_thread():
@@ -170,12 +178,25 @@ def test_progress_post_failure_degrades_without_raising():
 
 
 def test_render_progress_text_root_vs_reply():
+    # Fallback text (notification banners): one plain line, id only on the root.
     root = render_progress_text(_progress("feedback_received", thread_ts=""))
-    assert root.splitlines()[0].endswith("Add dark mode")
-    assert "`feedback-123`" in root
+    assert root == "New feedback — Add dark mode [feedback-123]"
     reply = render_progress_text(_progress("research"))
-    assert reply.splitlines()[0].endswith("*Consumer research*")
-    assert "feedback-123" not in reply  # replies stay terse; ids live on the root
+    assert reply == "Consumer research — Add dark mode"
+
+
+def test_progress_blocks_root_vs_reply():
+    # Root: headline + body section, run metadata in a small context footer.
+    section, footer = build_progress_blocks(_progress("feedback_received", thread_ts=""))
+    assert "*New feedback — Add dark mode*" in section["text"]["text"]
+    assert "summary: a dark mode toggle" in section["text"]["text"]
+    assert footer["type"] == "context"
+    assert "meal-planner" in footer["elements"][0]["text"]
+    assert "feedback-123" in footer["elements"][0]["text"]
+    # Replies stay terse: one section, no repeated ids — those live on the root.
+    (section,) = build_progress_blocks(_progress("research"))
+    assert "*Consumer research*" in section["text"]["text"]
+    assert "feedback-123" not in section["text"]["text"]
 
 
 def test_markdown_to_pdf_renders_unicode_content():

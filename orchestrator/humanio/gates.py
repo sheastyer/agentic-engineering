@@ -28,6 +28,13 @@ GATE_LABELS = {
     "budget": "Budget override",
     "clarification": "Reporter clarification needed",
 }
+GATE_EMOJI = {
+    "council": "🏛️",
+    "pm_signoff": "✍️",
+    "deploy": "🚀",
+    "budget": "💸",
+    "clarification": "❓",
+}
 
 # Progress-thread stages (ProgressNotice.stage) — presentation only, so it lives here
 # in the Slack layer, not in workflow code.
@@ -57,20 +64,46 @@ STAGE_EMOJI = {
 }
 
 
+def _meta_footer(*parts: str) -> dict:
+    """The run's metadata (project, workflow id, spend) as a context block — Slack
+    renders it small and gray, so it stops competing with the content above it."""
+    return {
+        "type": "context",
+        "elements": [{"type": "mrkdwn", "text": " · ".join(p for p in parts if p)[:3000]}],
+    }
+
+
 def render_progress_text(notice: ProgressNotice) -> str:
-    """One mrkdwn message per stage. The run's first post (no thread yet) is the thread
-    root, so it leads with the feedback title + ids; replies lead with the stage label."""
+    """Plain one-liner for the `text` field (notification banners, screen readers) —
+    the readable message is the blocks (build_progress_blocks)."""
+    label = STAGE_LABELS.get(notice.stage, notice.stage)
+    if not notice.thread_ts:
+        return f"{label} — {notice.title} [{notice.workflow_id}]"
+    return f"{label} — {notice.title}"
+
+
+def build_progress_blocks(notice: ProgressNotice) -> list[dict]:
+    """One section per stage: bold headline, detail lines under it. Only the thread
+    root carries the run metadata (as a small context footer) — replies stay terse,
+    the ids live on the root."""
     emoji = STAGE_EMOJI.get(notice.stage, "•")
     label = STAGE_LABELS.get(notice.stage, notice.stage)
     if not notice.thread_ts:
-        head = (
-            f"{emoji} *{label}:* {notice.title}\n"
-            f"*workflow:* `{notice.workflow_id}` · *project:* {notice.project}"
-        )
+        head = f"{emoji} *{label} — {notice.title}*"
     else:
         head = f"{emoji} *{label}*"
     body = "\n".join(notice.text)
-    return (head + (f"\n{body}" if body else ""))[:3000]
+    blocks = [
+        {
+            "type": "section",
+            # Block Kit caps a section's text at 3000 chars; detail lines are already
+            # clipped workflow-side, so this only trims pathological bodies.
+            "text": {"type": "mrkdwn", "text": (head + (f"\n{body}" if body else ""))[:3000]},
+        }
+    ]
+    if not notice.thread_ts:
+        blocks.append(_meta_footer(notice.project, f"`{notice.workflow_id}`"))
+    return blocks
 
 
 @dataclass
@@ -113,27 +146,22 @@ def fallback_text(notice: GateNotice) -> str:
 
 
 def build_blocks(notice: GateNotice) -> list[dict]:
-    """Render a GateNotice as Block Kit: header, context lines, and the gate's buttons.
+    """Render a GateNotice as Block Kit: one section (bold headline + context lines),
+    the gate's buttons, and the run metadata demoted to a small context footer —
+    the buttons are what should stand out, not the ids.
 
     Each button's ``value`` carries ``{workflow_id, gate, decision}`` as JSON — the
     listener decodes exactly that to signal the right workflow."""
     label = GATE_LABELS.get(notice.gate, notice.gate)
-    lines = [
-        f"*workflow:* `{notice.workflow_id}`",
-        f"*project:* {notice.project}",
-        f"*spend so far:* ${notice.cost_usd:.4f}",
-        *notice.context,
-    ]
+    emoji = GATE_EMOJI.get(notice.gate, "🔔")
+    head = f"{emoji} *{label} — {notice.title}*"
+    body = "\n".join(notice.context)
     blocks: list[dict] = [
-        {
-            "type": "header",
-            "text": {"type": "plain_text", "text": f"{label} — {notice.title}"[:150]},
-        },
         {
             "type": "section",
             # Block Kit caps a section's text at 3000 chars; context lines are already
             # clipped workflow-side, so this only trims pathological titles/fan-outs.
-            "text": {"type": "mrkdwn", "text": "\n".join(lines)[:3000]},
+            "text": {"type": "mrkdwn", "text": (head + (f"\n{body}" if body else ""))[:3000]},
         },
     ]
     buttons = [
@@ -150,4 +178,9 @@ def build_blocks(notice: GateNotice) -> list[dict]:
     ]
     if buttons:
         blocks.append({"type": "actions", "block_id": f"gate:{notice.gate}", "elements": buttons})
+    blocks.append(
+        _meta_footer(
+            notice.project, f"`{notice.workflow_id}`", f"${notice.cost_usd:.4f} spent"
+        )
+    )
     return blocks
