@@ -1,0 +1,1731 @@
+# story feat-extend-the-household-profile-to-
+diff --git a/app/api/chat/[date]/[meal]/message/route.ts b/app/api/chat/[date]/[meal]/message/route.ts
+index 4fde244..01607ae 100644
+--- a/app/api/chat/[date]/[meal]/message/route.ts
++++ b/app/api/chat/[date]/[meal]/message/route.ts
+@@ -74,7 +74,11 @@ export async function POST(
+     .limit(1)
+ 
+   const [householdRow] = await db
+-    .select({ preferencesText: households.preferencesText })
++    .select({
++      preferencesText: households.preferencesText,
++      cookingSkillLevel: households.cookingSkillLevel,
++      equipment: households.equipment,
++    })
+     .from(households)
+     .where(eq(households.id, householdId))
+     .limit(1)
+@@ -136,6 +140,8 @@ export async function POST(
+     historyContext,
+     source,
+     meal,
++    householdRow?.cookingSkillLevel ?? null,
++    householdRow?.equipment ?? null,
+   )
+   console.log('[system prompt]', systemPrompt)
+ 
+diff --git a/app/api/household/route.ts b/app/api/household/route.ts
+index 8bfa79d..28ddf79 100644
+--- a/app/api/household/route.ts
++++ b/app/api/household/route.ts
+@@ -4,11 +4,16 @@ import { db } from '@/db/client'
+ import { households } from '@/db/schema'
+ import { requireHousehold, unauthorized } from '@/lib/auth'
+ import { MEAL_TYPES, isMealType, type MealType } from '@/lib/meal-types'
++import {
++  isCookingSkillLevel,
++  normalizeEquipment,
++  type CookingSkillLevel,
++} from '@/lib/kitchen'
+ 
+ export const runtime = 'nodejs'
+ 
+ // GET /api/household — returns the household's name, free-form preferences,
+-// and which meal types it plans.
++// which meal types it plans, and its cooking profile (skill level + equipment).
+ export async function GET() {
+   const householdId = await requireHousehold()
+   if (!householdId) return unauthorized()
+@@ -17,6 +22,8 @@ export async function GET() {
+       name: households.name,
+       preferencesText: households.preferencesText,
+       plannedMealTypes: households.plannedMealTypes,
++      cookingSkillLevel: households.cookingSkillLevel,
++      equipment: households.equipment,
+     })
+     .from(households)
+     .where(eq(households.id, householdId))
+@@ -26,6 +33,8 @@ export async function GET() {
+     name: rows[0]?.name ?? null,
+     preferencesText: rows[0]?.preferencesText ?? null,
+     plannedMealTypes: rows[0]?.plannedMealTypes ?? ['dinner'],
++    cookingSkillLevel: rows[0]?.cookingSkillLevel ?? null,
++    equipment: rows[0]?.equipment ?? [],
+   })
+ }
+ 
+@@ -42,6 +51,8 @@ export async function PUT(req: Request) {
+     name?: unknown
+     preferencesText?: unknown
+     plannedMealTypes?: unknown
++    cookingSkillLevel?: unknown
++    equipment?: unknown
+   } | null
+ 
+   if (body === null) {
+@@ -52,6 +63,8 @@ export async function PUT(req: Request) {
+     name?: string
+     preferencesText?: string
+     plannedMealTypes?: MealType[]
++    cookingSkillLevel?: CookingSkillLevel | null
++    equipment?: string[]
+   } = {}
+ 
+   if (body.plannedMealTypes !== undefined) {
+@@ -94,6 +107,32 @@ export async function PUT(req: Request) {
+     patch.preferencesText = body.preferencesText
+   }
+ 
++  // Cooking skill level: a value from the fixed ladder, or null to clear it.
++  if (body.cookingSkillLevel !== undefined) {
++    if (
++      body.cookingSkillLevel !== null &&
++      !isCookingSkillLevel(body.cookingSkillLevel)
++    ) {
++      return NextResponse.json(
++        { error: 'cookingSkillLevel must be beginner, intermediate, advanced, or null' },
++        { status: 400 },
++      )
++    }
++    patch.cookingSkillLevel = body.cookingSkillLevel
++  }
++
++  // Equipment: any array of ids — normalized to a clean, deduped subset of the
++  // known catalog (unknown ids dropped), so an empty list clears the constraint.
++  if (body.equipment !== undefined) {
++    if (!Array.isArray(body.equipment)) {
++      return NextResponse.json(
++        { error: 'equipment must be an array of equipment ids' },
++        { status: 400 },
++      )
++    }
++    patch.equipment = normalizeEquipment(body.equipment)
++  }
++
+   if (Object.keys(patch).length === 0) {
+     return NextResponse.json(
+       { error: 'nothing to update' },
+diff --git a/app/household/page.tsx b/app/household/page.tsx
+index e7299dc..bdd1b43 100644
+--- a/app/household/page.tsx
++++ b/app/household/page.tsx
+@@ -11,6 +11,13 @@ import {
+   MEAL_TYPE_LABEL,
+   type MealType,
+ } from '@/lib/meal-types'
++import {
++  COOKING_SKILL_BLURB,
++  COOKING_SKILL_LABEL,
++  COOKING_SKILL_LEVELS,
++  EQUIPMENT,
++  type CookingSkillLevel,
++} from '@/lib/kitchen'
+ import type { Member } from '@/lib/types'
+ 
+ const PLACEHOLDER =
+@@ -21,6 +28,8 @@ export default function HouseholdPage() {
+   const [name, setName] = useState('')
+   const [value, setValue] = useState('')
+   const [plannedMeals, setPlannedMeals] = useState<MealType[]>(['dinner'])
++  const [skillLevel, setSkillLevel] = useState<CookingSkillLevel | null>(null)
++  const [equipment, setEquipment] = useState<string[]>([])
+   const [saved, setSaved] = useState(false)
+   const [loading, setLoading] = useState(true)
+   const [members, setMembers] = useState<Member[]>([])
+@@ -38,12 +47,16 @@ export default function HouseholdPage() {
+             name: string | null
+             preferencesText: string | null
+             plannedMealTypes: MealType[] | null
++            cookingSkillLevel: CookingSkillLevel | null
++            equipment: string[] | null
+           },
+           { members: Member[] },
+         ]) => {
+           setName(h.name ?? '')
+           setValue(h.preferencesText ?? '')
+           if (h.plannedMealTypes?.length) setPlannedMeals(h.plannedMealTypes)
++          setSkillLevel(h.cookingSkillLevel ?? null)
++          setEquipment(h.equipment ?? [])
+           setMembers(m.members ?? [])
+           setLoading(false)
+         },
+@@ -62,12 +75,23 @@ export default function HouseholdPage() {
+         name: name.trim(),
+         preferencesText: value,
+         plannedMealTypes: plannedMeals,
++        cookingSkillLevel: skillLevel,
++        equipment,
+       }),
+     })
+     setSaved(true)
+     setTimeout(() => setSaved(false), 2200)
+   }
+ 
++  const toggleEquipment = (id: string) => {
++    setEquipment((prev) =>
++      prev.includes(id)
++        ? prev.filter((x) => x !== id)
++        : // Store in catalog order so the saved list stays canonical.
++          EQUIPMENT.filter((e) => prev.includes(e.id) || e.id === id).map((e) => e.id),
++    )
++  }
++
+   const toggleMeal = (t: MealType) => {
+     setPlannedMeals((prev) =>
+       prev.includes(t)
+@@ -277,6 +301,124 @@ export default function HouseholdPage() {
+           })}
+         </div>
+ 
++        {/* ── Cooking skill level ─────────────────────────────────────── */}
++        <div
++          style={{
++            marginTop: 22,
++            fontSize: 11.5,
++            fontWeight: 700,
++            letterSpacing: 0.4,
++            textTransform: 'uppercase',
++            color: 'var(--text-3)',
++          }}
++        >
++          Cooking skill level
++        </div>
++        <div style={{ marginTop: 6, fontSize: 13.5, lineHeight: 1.5, color: 'var(--text-2)' }}>
++          We&apos;ll match recipe complexity to how confident you are in the kitchen.
++        </div>
++        <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
++          {COOKING_SKILL_LEVELS.map((level) => {
++            const active = skillLevel === level
++            return (
++              <button
++                key={level}
++                // Tapping the active level again clears it (back to "no preference").
++                onClick={() => setSkillLevel(active ? null : level)}
++                disabled={loading}
++                aria-pressed={active}
++                style={{
++                  display: 'flex',
++                  flexDirection: 'column',
++                  gap: 2,
++                  padding: '11px 13px',
++                  borderRadius: 12,
++                  textAlign: 'left',
++                  border: active ? '1.5px solid var(--accent)' : '1.5px solid var(--border)',
++                  background: active ? 'var(--accent-tint)' : 'var(--surface)',
++                }}
++              >
++                <span style={{ fontSize: 14.5, fontWeight: 600, color: 'var(--text)' }}>
++                  {COOKING_SKILL_LABEL[level]}
++                </span>
++                <span style={{ fontSize: 13, color: 'var(--text-2)' }}>
++                  {COOKING_SKILL_BLURB[level]}
++                </span>
++              </button>
++            )
++          })}
++        </div>
++
++        {/* ── Kitchen equipment ───────────────────────────────────────── */}
++        <div
++          style={{
++            marginTop: 22,
++            fontSize: 11.5,
++            fontWeight: 700,
++            letterSpacing: 0.4,
++            textTransform: 'uppercase',
++            color: 'var(--text-3)',
++          }}
++        >
++          Kitchen equipment
++        </div>
++        <div style={{ marginTop: 6, fontSize: 13.5, lineHeight: 1.5, color: 'var(--text-2)' }}>
++          Pick what you own so we only suggest meals you can actually make.
++        </div>
++        <div
++          style={{
++            marginTop: 10,
++            display: 'grid',
++            gridTemplateColumns: '1fr 1fr',
++            gap: 8,
++          }}
++        >
++          {EQUIPMENT.map((e) => {
++            const checked = equipment.includes(e.id)
++            return (
++              <button
++                key={e.id}
++                onClick={() => toggleEquipment(e.id)}
++                disabled={loading}
++                aria-pressed={checked}
++                style={{
++                  display: 'flex',
++                  alignItems: 'center',
++                  gap: 9,
++                  padding: '11px 12px',
++                  borderRadius: 12,
++                  textAlign: 'left',
++                  border: checked ? '1.5px solid var(--accent)' : '1.5px solid var(--border)',
++                  background: checked ? 'var(--accent-tint)' : 'var(--surface)',
++                }}
++              >
++                <span
++                  aria-hidden
++                  style={{
++                    width: 20,
++                    height: 20,
++                    flexShrink: 0,
++                    borderRadius: 6,
++                    border: checked ? 'none' : '1.5px solid var(--text-3)',
++                    background: checked ? 'var(--accent)' : 'transparent',
++                    color: 'var(--on-accent)',
++                    display: 'flex',
++                    alignItems: 'center',
++                    justifyContent: 'center',
++                    fontSize: 13,
++                    fontWeight: 700,
++                  }}
++                >
++                  {checked ? '✓' : ''}
++                </span>
++                <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>
++                  {e.label}
++                </span>
++              </button>
++            )
++          })}
++        </div>
++
+         <div style={{ marginTop: 14 }}>
+           {saved ? (
+             <div
+diff --git a/db/schema.ts b/db/schema.ts
+index e665ee2..a84b2c1 100644
+--- a/db/schema.ts
++++ b/db/schema.ts
+@@ -14,6 +14,7 @@ import {
+ } from 'drizzle-orm/pg-core'
+ import type { ParsedRecipe, RecipeDetails, RecipeRating, StoredMessage } from '@/lib/types'
+ import type { MealType } from '@/lib/meal-types'
++import type { CookingSkillLevel } from '@/lib/kitchen'
+ import type {
+   Multipliers,
+   ShoppingItemSource,
+@@ -40,6 +41,13 @@ export const households = pgTable('households', {
+     .$type<MealType[]>()
+     .notNull()
+     .default(sql`'["dinner"]'::jsonb`),
++  // The household's cooking confidence — steers recipe complexity in the prompt
++  // (soft signal). Null until the household sets it (treated as no steer).
++  cookingSkillLevel: text('cooking_skill_level').$type<CookingSkillLevel>(),
++  // Kitchen appliances the household owns (ids from lib/kitchen EQUIPMENT). A
++  // hard constraint on recommendations. Null until set — treated downstream as
++  // "no constraint" (assume a standard kitchen) rather than "owns nothing".
++  equipment: jsonb('equipment').$type<string[]>(),
+   // Null until the new-household onboarding wizard is completed. The app gates
+   // access to the calendar on this: a signed-in household with a null value is
+   // sent to /onboarding to name the household, set preferences, and add members.
+diff --git a/drizzle/0012_thankful_titania.sql b/drizzle/0012_thankful_titania.sql
+new file mode 100644
+index 0000000..d0332f3
+--- /dev/null
++++ b/drizzle/0012_thankful_titania.sql
+@@ -0,0 +1,2 @@
++ALTER TABLE "households" ADD COLUMN "cooking_skill_level" text;--> statement-breakpoint
++ALTER TABLE "households" ADD COLUMN "equipment" jsonb;
+\ No newline at end of file
+diff --git a/drizzle/meta/0012_snapshot.json b/drizzle/meta/0012_snapshot.json
+new file mode 100644
+index 0000000..51c0292
+--- /dev/null
++++ b/drizzle/meta/0012_snapshot.json
+@@ -0,0 +1,1203 @@
++{
++  "id": "94ab6b35-902e-4dcd-bfce-1ace054bdadd",
++  "prevId": "01d16d79-89d1-44dd-b813-32947abac7a3",
++  "version": "7",
++  "dialect": "postgresql",
++  "tables": {
++    "public.changelog_entries": {
++      "name": "changelog_entries",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "version": {
++          "name": "version",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "released_at": {
++          "name": "released_at",
++          "type": "date",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "category": {
++          "name": "category",
++          "type": "changelog_category",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "description": {
++          "name": "description",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "sort_order": {
++          "name": "sort_order",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.chat_threads": {
++      "name": "chat_threads",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "slot_date": {
++          "name": "slot_date",
++          "type": "date",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "meal_type": {
++          "name": "meal_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'dinner'"
++        },
++        "messages": {
++          "name": "messages",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'[]'::jsonb"
++        },
++        "attendee_ids": {
++          "name": "attendee_ids",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        },
++        "summary": {
++          "name": "summary",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "chat_threads_household_id_households_id_fk": {
++          "name": "chat_threads_household_id_households_id_fk",
++          "tableFrom": "chat_threads",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "chat_threads_household_date_meal_uq": {
++          "name": "chat_threads_household_date_meal_uq",
++          "nullsNotDistinct": false,
++          "columns": [
++            "household_id",
++            "slot_date",
++            "meal_type"
++          ]
++        }
++      },
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.cookbook_recipes": {
++      "name": "cookbook_recipes",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "origin": {
++          "name": "origin",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "origin_recipe_id": {
++          "name": "origin_recipe_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "title": {
++          "name": "title",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "details": {
++          "name": "details",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "image_url": {
++          "name": "image_url",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "cuisines": {
++          "name": "cuisines",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'[]'::jsonb"
++        },
++        "is_favorite": {
++          "name": "is_favorite",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "household_note": {
++          "name": "household_note",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "last_cooked_at": {
++          "name": "last_cooked_at",
++          "type": "date",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "cookbook_recipes_household_origin_uq": {
++          "name": "cookbook_recipes_household_origin_uq",
++          "columns": [
++            {
++              "expression": "household_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "origin_recipe_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": true,
++          "where": "\"cookbook_recipes\".\"origin_recipe_id\" is not null",
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "cookbook_recipes_household_id_households_id_fk": {
++          "name": "cookbook_recipes_household_id_households_id_fk",
++          "tableFrom": "cookbook_recipes",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.cookbook_uploads": {
++      "name": "cookbook_uploads",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "recipe_id": {
++          "name": "recipe_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "storage_key": {
++          "name": "storage_key",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "content_type": {
++          "name": "content_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "byte_size": {
++          "name": "byte_size",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'uploaded'"
++        },
++        "kind": {
++          "name": "kind",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "parse_result": {
++          "name": "parse_result",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "parse_error": {
++          "name": "parse_error",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "model": {
++          "name": "model",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        },
++        "parsed_at": {
++          "name": "parsed_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "cookbook_uploads_household_id_households_id_fk": {
++          "name": "cookbook_uploads_household_id_households_id_fk",
++          "tableFrom": "cookbook_uploads",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        },
++        "cookbook_uploads_recipe_id_cookbook_recipes_id_fk": {
++          "name": "cookbook_uploads_recipe_id_cookbook_recipes_id_fk",
++          "tableFrom": "cookbook_uploads",
++          "tableTo": "cookbook_recipes",
++          "columnsFrom": [
++            "recipe_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "set null",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.family_members": {
++      "name": "family_members",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "allergies": {
++          "name": "allergies",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'[]'::jsonb"
++        },
++        "preferences": {
++          "name": "preferences",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "family_members_household_id_households_id_fk": {
++          "name": "family_members_household_id_households_id_fk",
++          "tableFrom": "family_members",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.feedback": {
++      "name": "feedback",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "type": {
++          "name": "type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "message": {
++          "name": "message",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "page_path": {
++          "name": "page_path",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "feedback_household_id_households_id_fk": {
++          "name": "feedback_household_id_households_id_fk",
++          "tableFrom": "feedback",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "set null",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.households": {
++      "name": "households",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "clerk_user_id": {
++          "name": "clerk_user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "username": {
++          "name": "username",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "password_hash": {
++          "name": "password_hash",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "preferences_text": {
++          "name": "preferences_text",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "planned_meal_types": {
++          "name": "planned_meal_types",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'[\"dinner\"]'::jsonb"
++        },
++        "cooking_skill_level": {
++          "name": "cooking_skill_level",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "equipment": {
++          "name": "equipment",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "onboarded_at": {
++          "name": "onboarded_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "households_username_unique": {
++          "name": "households_username_unique",
++          "nullsNotDistinct": false,
++          "columns": [
++            "username"
++          ]
++        }
++      },
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.meal_log": {
++      "name": "meal_log",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "meal_type": {
++          "name": "meal_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'dinner'"
++        },
++        "recipe_id": {
++          "name": "recipe_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "meal_name": {
++          "name": "meal_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "meal_name_norm": {
++          "name": "meal_name_norm",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "rating": {
++          "name": "rating",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "feedback_note": {
++          "name": "feedback_note",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "served_at": {
++          "name": "served_at",
++          "type": "date",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "meal_log_household_id_households_id_fk": {
++          "name": "meal_log_household_id_households_id_fk",
++          "tableFrom": "meal_log",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "meal_log_household_served_meal_norm_uq": {
++          "name": "meal_log_household_served_meal_norm_uq",
++          "nullsNotDistinct": false,
++          "columns": [
++            "household_id",
++            "served_at",
++            "meal_type",
++            "meal_name_norm"
++          ]
++        }
++      },
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.meal_slots": {
++      "name": "meal_slots",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "slot_date": {
++          "name": "slot_date",
++          "type": "date",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "meal_type": {
++          "name": "meal_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'dinner'"
++        },
++        "recipe_id": {
++          "name": "recipe_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "recipe_name": {
++          "name": "recipe_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "recipe_snapshot": {
++          "name": "recipe_snapshot",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'confirmed'"
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "meal_slots_household_id_households_id_fk": {
++          "name": "meal_slots_household_id_households_id_fk",
++          "tableFrom": "meal_slots",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "meal_slots_household_date_meal_uq": {
++          "name": "meal_slots_household_date_meal_uq",
++          "nullsNotDistinct": false,
++          "columns": [
++            "household_id",
++            "slot_date",
++            "meal_type"
++          ]
++        }
++      },
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.sessions": {
++      "name": "sessions",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        },
++        "expires_at": {
++          "name": "expires_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "sessions_household_id_households_id_fk": {
++          "name": "sessions_household_id_households_id_fk",
++          "tableFrom": "sessions",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.shopping_list_items": {
++      "name": "shopping_list_items",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "list_id": {
++          "name": "list_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "source": {
++          "name": "source",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "name_norm": {
++          "name": "name_norm",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "quantity": {
++          "name": "quantity",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "category": {
++          "name": "category",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'other'"
++        },
++        "source_lines": {
++          "name": "source_lines",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'[]'::jsonb"
++        },
++        "allergy_flags": {
++          "name": "allergy_flags",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'[]'::jsonb"
++        },
++        "note": {
++          "name": "note",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "checked": {
++          "name": "checked",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "checked_at": {
++          "name": "checked_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "sort_order": {
++          "name": "sort_order",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "shopping_list_items_list_name_recipe_uq": {
++          "name": "shopping_list_items_list_name_recipe_uq",
++          "columns": [
++            {
++              "expression": "list_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "name_norm",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": true,
++          "where": "\"shopping_list_items\".\"source\" = 'recipe'",
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "shopping_list_items_list_id_shopping_lists_id_fk": {
++          "name": "shopping_list_items_list_id_shopping_lists_id_fk",
++          "tableFrom": "shopping_list_items",
++          "tableTo": "shopping_lists",
++          "columnsFrom": [
++            "list_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        },
++        "shopping_list_items_household_id_households_id_fk": {
++          "name": "shopping_list_items_household_id_households_id_fk",
++          "tableFrom": "shopping_list_items",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.shopping_lists": {
++      "name": "shopping_lists",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'active'"
++        },
++        "slot_selection": {
++          "name": "slot_selection",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "multipliers": {
++          "name": "multipliers",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'{}'::jsonb"
++        },
++        "model": {
++          "name": "model",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "shopping_lists_household_active_uq": {
++          "name": "shopping_lists_household_active_uq",
++          "columns": [
++            {
++              "expression": "household_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": true,
++          "where": "\"shopping_lists\".\"status\" = 'active'",
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "shopping_lists_household_id_households_id_fk": {
++          "name": "shopping_lists_household_id_households_id_fk",
++          "tableFrom": "shopping_lists",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.web_recipe_cache": {
++      "name": "web_recipe_cache",
++      "schema": "",
++      "columns": {
++        "url_hash": {
++          "name": "url_hash",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "url": {
++          "name": "url",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "source": {
++          "name": "source",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "snapshot": {
++          "name": "snapshot",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "fetched_at": {
++          "name": "fetched_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    }
++  },
++  "enums": {
++    "public.changelog_category": {
++      "name": "changelog_category",
++      "schema": "public",
++      "values": [
++        "added",
++        "changed",
++        "fixed",
++        "removed"
++      ]
++    }
++  },
++  "schemas": {},
++  "sequences": {},
++  "roles": {},
++  "policies": {},
++  "views": {},
++  "_meta": {
++    "columns": {},
++    "schemas": {},
++    "tables": {}
++  }
++}
+\ No newline at end of file
+diff --git a/drizzle/meta/_journal.json b/drizzle/meta/_journal.json
+index 0f4af95..659e429 100644
+--- a/drizzle/meta/_journal.json
++++ b/drizzle/meta/_journal.json
+@@ -85,6 +85,13 @@
+       "when": 1782977944459,
+       "tag": "0011_harden_shopping_list",
+       "breakpoints": true
++    },
++    {
++      "idx": 12,
++      "version": "7",
++      "when": 1783140010134,
++      "tag": "0012_thankful_titania",
++      "breakpoints": true
+     }
+   ]
+ }
+\ No newline at end of file
+diff --git a/lib/kitchen.ts b/lib/kitchen.ts
+new file mode 100644
+index 0000000..71e06b9
+--- /dev/null
++++ b/lib/kitchen.ts
+@@ -0,0 +1,83 @@
++// Shared catalog for the household's cooking profile: how confident they are in
++// the kitchen (skill level) and what appliances they own (equipment). Both are
++// household-level context threaded into every recommendation prompt — the skill
++// level steers recipe complexity (soft signal) and the equipment list is a hard
++// constraint (never suggest a recipe that needs a tool the household lacks).
++// One module so the schema, API validation, UI controls, and prompt all agree
++// on the same ids and labels.
++
++// ── Cooking skill level ─────────────────────────────────────────────────────
++// A small fixed ladder. Declaration order is the canonical display order
++// (least → most experienced).
++export const COOKING_SKILL_LEVELS = ['beginner', 'intermediate', 'advanced'] as const
++
++export type CookingSkillLevel = (typeof COOKING_SKILL_LEVELS)[number]
++
++export function isCookingSkillLevel(v: unknown): v is CookingSkillLevel {
++  return (
++    typeof v === 'string' &&
++    (COOKING_SKILL_LEVELS as readonly string[]).includes(v)
++  )
++}
++
++export const COOKING_SKILL_LABEL: Record<CookingSkillLevel, string> = {
++  beginner: 'Beginner',
++  intermediate: 'Intermediate',
++  advanced: 'Advanced',
++}
++
++// One-line description shown under each option in the profile UI.
++export const COOKING_SKILL_BLURB: Record<CookingSkillLevel, string> = {
++  beginner: 'Simple recipes and basic techniques',
++  intermediate: 'Comfortable with everyday cooking',
++  advanced: 'Happy to take on involved dishes',
++}
++
++// Per-level guidance appended to the system prompt. Intermediate is the neutral
++// baseline; beginner and advanced pull recipe complexity in either direction.
++export const COOKING_SKILL_PROMPT_GUIDANCE: Record<CookingSkillLevel, string> = {
++  beginner:
++    'The household cooks at a BEGINNER level — favor simple recipes with short ingredient lists and basic techniques. Avoid dishes that assume advanced knife skills, precise timing, or specialty methods.',
++  intermediate:
++    'The household cooks at an INTERMEDIATE level — everyday techniques are fine and the occasional multi-step recipe is welcome, but keep things approachable.',
++  advanced:
++    'The household cooks at an ADVANCED level — involved, technique-heavy recipes are welcome when they fit the request.',
++}
++
++// ── Kitchen equipment ───────────────────────────────────────────────────────
++// The appliances a household can own. `id` is the stable key stored in
++// households.equipment; `label` is the UI + prompt display string. Declaration
++// order is the canonical display/storage order.
++export type EquipmentItem = { id: string; label: string }
++
++export const EQUIPMENT: readonly EquipmentItem[] = [
++  { id: 'oven', label: 'Oven' },
++  { id: 'stovetop', label: 'Stovetop' },
++  { id: 'microwave', label: 'Microwave' },
++  { id: 'slow_cooker', label: 'Slow cooker' },
++  { id: 'instant_pot', label: 'Instant Pot / pressure cooker' },
++  { id: 'air_fryer', label: 'Air fryer' },
++  { id: 'grill', label: 'Grill' },
++  { id: 'blender', label: 'Blender' },
++  { id: 'food_processor', label: 'Food processor' },
++  { id: 'stand_mixer', label: 'Stand mixer' },
++] as const
++
++export const EQUIPMENT_IDS: readonly string[] = EQUIPMENT.map((e) => e.id)
++
++export const EQUIPMENT_LABEL: Record<string, string> = Object.fromEntries(
++  EQUIPMENT.map((e) => [e.id, e.label]),
++)
++
++export function isEquipmentId(v: unknown): v is string {
++  return typeof v === 'string' && EQUIPMENT_IDS.includes(v)
++}
++
++// Normalize an arbitrary payload into a clean, canonically-ordered, deduped
++// list of known equipment ids. Unknown / malformed entries are dropped, so the
++// stored value is always a valid subset of EQUIPMENT_IDS.
++export function normalizeEquipment(input: unknown): string[] {
++  if (!Array.isArray(input)) return []
++  const set = new Set(input.filter(isEquipmentId))
++  return EQUIPMENT.filter((e) => set.has(e.id)).map((e) => e.id)
++}
+diff --git a/lib/prompts.ts b/lib/prompts.ts
+index e4cd2b1..d1bb7d1 100644
+--- a/lib/prompts.ts
++++ b/lib/prompts.ts
+@@ -6,6 +6,11 @@ import {
+   SPOONACULAR_TYPE,
+   type MealType,
+ } from '@/lib/meal-types'
++import {
++  COOKING_SKILL_PROMPT_GUIDANCE,
++  EQUIPMENT_LABEL,
++  type CookingSkillLevel,
++} from '@/lib/kitchen'
+ 
+ // The system prompt is assembled fresh before every LLM call from typed
+ // context: the household's free-form preferences plus the profiles of whoever
+@@ -20,11 +25,14 @@ export function buildSystemPrompt(
+   historyContext?: string | null,
+   source: RecipeSourceMode = 'spoonacular',
+   mealType: MealType = 'dinner',
++  cookingSkillLevel?: CookingSkillLevel | null,
++  equipment?: string[] | null,
+ ): string {
+   const historySection = historyContext?.trim()
+     ? `\nMeal history:\n${historyContext.trim()}\n`
+     : ''
+   const phrase = MEAL_TYPE_PHRASE[mealType]
++  const kitchenSection = formatKitchen(cookingSkillLevel, equipment)
+ 
+   return `You are a meal planning assistant. Help the household find a ${mealType} recipe they'll enjoy ${phrase}.
+ 
+@@ -34,7 +42,7 @@ Household context:
+ ${preferencesText?.trim() || 'No household preferences set yet.'}
+ 
+ ${formatAttendees(attendees, mealType)}
+-${historySection}
++${kitchenSection}${historySection}
+ Honoring allergies and preferences:
+ - Treat every allergy listed above as an ABSOLUTE, non-negotiable constraint. Never recommend a recipe that contains, or is likely to contain, an allergen for ANY person eating ${phrase} — this includes hidden sources (e.g. soy sauce contains gluten/soy, pesto often contains nuts). When in doubt, exclude it.
+ - Preferences (likes/dislikes) are soft signals, not rules. With several people eating, no single meal will satisfy everyone's tastes — aim for the best overall fit for the group rather than a perfect match, and lean toward shared likes while avoiding strong shared dislikes.
+@@ -61,6 +69,26 @@ const webToolRules = (mealType: MealType) => `Rules:
+ - If a get_web_recipe call returns an error, skip that candidate and try another one's url so you still end up with a few fetched recipes (or run search_web_recipes again with a different query if you run low). Don't fetch more than four candidates total.
+ - Present the recipes you actually fetched as a small set to choose from — do NOT pick just one. Give a one-line intro, then refer to each by its exact title with a few words on what makes it appealing so they know which is which. Keep your reply to 2-3 sentences; the household taps the option they want, so don't ask them to type a choice.`
+ 
++// Render the household's cooking profile for the system prompt: skill level (a
++// soft steer on recipe complexity) and owned equipment (a hard constraint on
++// how the meal can be cooked). Returns '' when neither is set so the prompt
++// stays lean for households that haven't filled it in.
++function formatKitchen(
++  skill: CookingSkillLevel | null | undefined,
++  equipment: string[] | null | undefined,
++): string {
++  const lines: string[] = []
++  if (skill) lines.push(COOKING_SKILL_PROMPT_GUIDANCE[skill])
++  const owned = (equipment ?? []).map((id) => EQUIPMENT_LABEL[id] ?? id)
++  if (owned.length > 0) {
++    lines.push(
++      `Available kitchen equipment: ${owned.join(', ')}. Treat this as a hard constraint on how the meal is cooked — only recommend recipes the household can make with the appliances listed here. Never suggest a dish whose core method needs an appliance that isn't listed (e.g. don't propose an air-fryer or slow-cooker recipe unless that appliance appears above).`,
++    )
++  }
++  if (lines.length === 0) return ''
++  return `Kitchen:\n${lines.join('\n')}\n`
++}
++
+ // Render the people eating this meal as a readable block for the system prompt.
+ function formatAttendees(attendees: Member[], mealType: MealType): string {
+   // "Eating tonight" / "Eating breakfast" / "Having a snack" — reads naturally
