@@ -145,7 +145,7 @@ class FeatureRequestWorkflow:
         # One terminal post covers every exit path (shipped/held/rejected/over-budget/...).
         await self._notify_progress(
             "done",
-            [f"status: {result.status}", clip(result.summary), f"total cost: ${result.cost_usd:.4f}"],
+            [f"status: {result.status} · total cost ${result.cost_usd:.4f}", clip(result.summary)],
         )
         return result
 
@@ -156,7 +156,7 @@ class FeatureRequestWorkflow:
         # Root of the run's Slack thread: the feedback itself, the moment work starts.
         await self._notify_progress(
             "feedback_received",
-            [f"kind: {event.kind}", f"from: {event.submitted_by}", clip(event.body)],
+            [f"{event.kind} from {event.submitted_by}", clip(event.body)],
         )
 
         # 1. PM brief
@@ -217,10 +217,13 @@ class FeatureRequestWorkflow:
             self._cost += report.cost_tokens
             self._cost_usd += report.cost_usd
             await self._check_budget()
+            # One line for the panel — per-persona detail lives in the attached PDF.
             await self._notify_progress(
                 "research",
-                [f"overall: {report.overall_sentiment}"]
-                + [f"{f.persona}: {f.sentiment}" for f in report.findings],
+                [
+                    f"overall: {report.overall_sentiment}",
+                    " · ".join(f"{f.persona} {f.sentiment}" for f in report.findings),
+                ],
                 document_title=f"Consumer research — {self._title}",
                 document_md=_research_md(report),
             )
@@ -259,15 +262,16 @@ class FeatureRequestWorkflow:
         self._cost += pod.cost_tokens
         self._cost_usd += pod.cost_usd
         await self._check_budget()
+        # Verdicts on one line — the deploy gate card that follows carries the detail.
         await self._notify_progress(
             "engineering",
             [
                 f"coding: {pod.story_result.status}"
                 + (f" ({pod.story_result.tier})" if pod.story_result.tier else ""),
                 f"PR: {pod.pr_url or pod.branch}",
-                f"QA: {'passed' if pod.qa.passed else 'failed'} — {clip(pod.qa.notes)}",
-                f"review: {'approved' if pod.review_approved else 'unresolved'}",
-                f"CI: {clip(pod.ci_notes) or 'n/a'}",
+                f"QA {'passed' if pod.qa.passed else 'failed'}"
+                f" · review {'approved' if pod.review_approved else 'unresolved'}"
+                f" · CI {clip(pod.ci_notes) or 'n/a'}",
             ],
         )
 
@@ -370,15 +374,13 @@ class FeatureRequestWorkflow:
                 f"council: escalated, agent advisory {approvals}/{len(agent_votes)} "
                 f"-> {'approved' if approved else 'rejected'}"
             )
+        # Outcome + a one-line tally; the rationales are on the gate card just above.
         await self._notify_progress(
             "council",
             [
                 f"outcome: {'approved' if approved else 'rejected'}"
-                + (" (escalated to agent advisory majority)" if escalated else "")
-            ]
-            + [
-                f"{v.voter}: {'approve' if v.approve else 'reject'} — {clip(v.rationale)}"
-                for v in votes
+                + (" (escalated to agent advisory majority)" if escalated else ""),
+                " · ".join(f"{v.voter} {'✅' if v.approve else '❌'}" for v in votes),
             ],
         )
         return CouncilResult(votes=votes, approved=approved, escalated=escalated)
