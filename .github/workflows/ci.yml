@@ -1,0 +1,44 @@
+name: CI
+
+# Run the test suite on every PR (and on pushes to main for a post-merge signal).
+# Executes on a self-hosted runner advertising the labels `self-hosted, ci`.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A newer push to the same PR cancels the in-flight run so the runner isn't tied up.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: [self-hosted, ci]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure the Temporal CLI (dev server used by the workflow tests)
+        run: |
+          # Installs to ~/.temporalio/bin — the path tests/helpers.py resolves. The
+          # self-hosted runner's filesystem persists between jobs, so this is a no-op
+          # after the first run.
+          if [ ! -x "$HOME/.temporalio/bin/temporal" ]; then
+            curl -sSf https://temporal.download/cli.sh | sh
+          fi
+          "$HOME/.temporalio/bin/temporal" --version
+
+      - name: Create venv and install (dev + slack extras)
+        run: |
+          # slack extra pulls in fpdf2 + markdown, which the humanio PDF-render tests need.
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install -e '.[dev,slack]'
+
+      - name: Run tests
+        run: |
+          . .venv/bin/activate
+          # Docker-backed tests self-skip when no daemon is reachable; the runner has
+          # Docker, so the sandbox-isolation gate is exercised here.
+          pytest -q
