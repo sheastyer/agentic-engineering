@@ -1,6 +1,7 @@
 """Test helpers: worker wiring, activity-override merging, and a query poller."""
 
 import asyncio
+import os
 import uuid
 
 from orchestrator.activities import stubs
@@ -17,8 +18,11 @@ ALL_WORKFLOWS = [
     EngineeringPodWorkflow,
 ]
 
-# Path to the temporal CLI we installed, so start_local reuses it instead of downloading.
-TEMPORAL_CLI = "/Users/sheastyer/.temporalio/bin/temporal"
+# Path to the temporal CLI, so start_local reuses it instead of downloading each run.
+# Resolves per-machine: the official installer (https://temporal.download/cli.sh) drops
+# the binary under ~/.temporalio/bin on both macOS and Linux, so expanduser works for a
+# local dev box and for CI alike. Override with TEMPORAL_CLI if it lives elsewhere.
+TEMPORAL_CLI = os.environ.get("TEMPORAL_CLI") or os.path.expanduser("~/.temporalio/bin/temporal")
 
 
 def activities_with(overrides: dict | None = None) -> list:
