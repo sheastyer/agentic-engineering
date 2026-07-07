@@ -206,8 +206,29 @@ gate (which stays as the backstop for revise loops that re-draw the cap). `cli.r
 auto-funds the estimate at this gate like every other gate (unless `ORG_SLACK` watches).
 **190 tests green** (`test_coding_budget_gate.py`: 22 new — estimator math, dollar
 parsing, card blocks/input round-trip, listener payload decoding, signal mapping, and
-workflow fund/custom/reject/timeout paths at $0). Not yet live-validated in Slack proper
-(the input block renders on the next `ORG_SLACK=1` run).
+workflow fund/custom/reject/timeout paths at $0).
+
+**Live validation (2026-07-07, run `feedback-demo-e5e3b1b5`, pantry-staples feature):**
+the gate **worked end-to-end in Slack** — card rendered (estimate $10.75: 5 stories, 2×
+sonnet + 3× opus; worst case ×3 shown), and the human typed a **custom $15.00** into the
+text input → listener decoded the `plain_text_input` payload, `parse_dollars` accepted,
+`submit_coding_budget` landed, the pod launched with `coding_budget_usd=15.0` (turns
+scaled to 420) and the workflow ceiling lifted. **But the run then exposed a gap:** the
+funded budget scaled dollars and turns, NOT the flat 20-min
+`CODING_ACTIVITY_TIMEOUT_MINUTES` — `implement_stories` hit StartToClose at 20:00 on
+attempt 1 and the Temporal retry (max 4) silently discarded the whole paid pass (and,
+with no heartbeat, the worker kept the timed-out attempt's SDK session running alongside
+attempt 2 — double subscription burn). Run terminated by hand mid-attempt-2. **Fix (same
+day): `_coding_timeout(plan)` in `engineering_pod.py`** — the coding passes' StartToClose
+scales with `coding_budget_usd / CODING_MAX_BUDGET_USD` ($15 → 120 min), capped at
+`CODING_ACTIVITY_TIMEOUT_MAX_MINUTES` (240); unfunded plans keep the flat default so old
+histories replay unchanged. The rule is now: **a funded budget scales all three caps —
+dollars, turns, wall-clock.** Follow-up worth doing before the next heavy run: heartbeat
+the coding activities so a timed-out attempt's SDK session is actually cancelled instead
+of running to completion in parallel with its retry. Also added `cli.run --body` (the
+feedback body was hardcoded demo text; the PM brief and the pod need the real report).
+Still pending: a full multi-story live run to the PR (orchestrator dispatch validated
+only up to launch; the run was cut at the timeout).
 
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`

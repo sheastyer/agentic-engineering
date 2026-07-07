@@ -21,7 +21,13 @@ CI_ACTIVITY_TIMEOUT_MINUTES = 25  # start-to-close for the await_ci activity (> 
 
 # Engineering-pod activities run a real coding agent + the target's tests in a sandbox —
 # far longer than the 30s default for reasoning activities (common.py). Minutes, not seconds.
+# A human-funded coding round (the pre-pod coding-budget gate) scales this with the budget
+# (engineering_pod._coding_timeout): all three caps must rise together — dollars, turns, AND
+# wall-clock. Learned live 2026-07-07 (run feedback-demo-e5e3b1b5): a $15-funded 5-story run
+# hit the flat 20-min StartToClose on attempt 1 and the Temporal retry silently discarded the
+# whole paid coding pass. The ceiling bounds how long a hung session can park the workflow.
 CODING_ACTIVITY_TIMEOUT_MINUTES = 20
+CODING_ACTIVITY_TIMEOUT_MAX_MINUTES = 240
 
 # Coding-pod cost controls (CLAUDE.md §10 — the pod dominates a feature's cost). The agent
 # runs on the Claude subscription, so an uncapped pod can drain the 5-hour usage window. The
