@@ -1,0 +1,2691 @@
+# story feat-add-a-pantry-staples-list-to-the
+diff --git a/app/api/household/pantry-staples/[id]/route.ts b/app/api/household/pantry-staples/[id]/route.ts
+new file mode 100644
+index 0000000..1df810b
+--- /dev/null
++++ b/app/api/household/pantry-staples/[id]/route.ts
+@@ -0,0 +1,29 @@
++import { NextResponse } from 'next/server'
++import { and, eq } from 'drizzle-orm'
++import { db } from '@/db/client'
++import { pantryStaples } from '@/db/schema'
++import { requireHousehold, unauthorized } from '@/lib/auth'
++
++export const runtime = 'nodejs'
++
++// DELETE /api/household/pantry-staples/[id] — remove a staple (tenant-scoped).
++export async function DELETE(
++  _req: Request,
++  { params }: { params: Promise<{ id: string }> },
++) {
++  const householdId = await requireHousehold()
++  if (!householdId) return unauthorized()
++  const { id } = await params
++
++  const [row] = await db
++    .delete(pantryStaples)
++    .where(
++      and(eq(pantryStaples.id, id), eq(pantryStaples.householdId, householdId)),
++    )
++    .returning({ id: pantryStaples.id })
++
++  if (!row) {
++    return NextResponse.json({ error: 'staple not found' }, { status: 404 })
++  }
++  return NextResponse.json({ success: true })
++}
+diff --git a/app/api/household/pantry-staples/route.ts b/app/api/household/pantry-staples/route.ts
+new file mode 100644
+index 0000000..cf222ce
+--- /dev/null
++++ b/app/api/household/pantry-staples/route.ts
+@@ -0,0 +1,65 @@
++import { NextResponse } from 'next/server'
++import { asc, eq } from 'drizzle-orm'
++import { db } from '@/db/client'
++import { pantryStaples } from '@/db/schema'
++import { requireHousehold, unauthorized } from '@/lib/auth'
++import { normalizeName } from '@/lib/normalize'
++import { normalizeStapleInput } from '@/lib/pantry-staples'
++import type { PantryStapleDto } from '@/lib/types'
++
++export const runtime = 'nodejs'
++
++// Postgres unique_violation SQLSTATE. Both the Neon HTTP driver and
++// node-postgres surface it on `err.code`. Duplicated from lib/shopping/service.ts
++// (not exported there) — consistent with how the codebase already handles this.
++function isUniqueViolation(err: unknown): boolean {
++  return (
++    typeof err === 'object' &&
++    err !== null &&
++    'code' in err &&
++    (err as { code?: unknown }).code === '23505'
++  )
++}
++
++// GET /api/household/pantry-staples — list the household's pantry staples.
++export async function GET() {
++  const householdId = await requireHousehold()
++  if (!householdId) return unauthorized()
++  const rows = await db
++    .select()
++    .from(pantryStaples)
++    .where(eq(pantryStaples.householdId, householdId))
++    .orderBy(asc(pantryStaples.createdAt))
++
++  const staples: PantryStapleDto[] = rows.map((r) => ({ id: r.id, name: r.name }))
++  return NextResponse.json({ staples })
++}
++
++// POST /api/household/pantry-staples — add a staple.
++export async function POST(req: Request) {
++  const householdId = await requireHousehold()
++  if (!householdId) return unauthorized()
++  const parsed = normalizeStapleInput(await req.json().catch(() => null))
++  if ('error' in parsed) {
++    return NextResponse.json({ error: parsed.error }, { status: 400 })
++  }
++
++  const normalizedName = normalizeName(parsed.value.name)
++  try {
++    const [row] = await db
++      .insert(pantryStaples)
++      .values({ householdId, name: parsed.value.name, normalizedName })
++      .returning()
++
++    const staple: PantryStapleDto = { id: row.id, name: row.name }
++    return NextResponse.json({ staple }, { status: 201 })
++  } catch (err) {
++    if (isUniqueViolation(err)) {
++      return NextResponse.json(
++        { error: 'You already have that in your pantry staples' },
++        { status: 409 },
++      )
++    }
++    throw err
++  }
++}
+diff --git a/app/household/page.tsx b/app/household/page.tsx
+index f419cd1..a095539 100644
+--- a/app/household/page.tsx
++++ b/app/household/page.tsx
+@@ -18,7 +18,7 @@ import {
+   EQUIPMENT,
+   type CookingSkillLevel,
+ } from '@/lib/kitchen'
+-import type { Member } from '@/lib/types'
++import type { Member, PantryStapleDto } from '@/lib/types'
+ 
+ const PLACEHOLDER =
+   'e.g. "We love Mexican and Thai food. We don\'t eat pork. Quick weeknight meals preferred."'
+@@ -36,14 +36,18 @@ export default function HouseholdPage() {
+   const [members, setMembers] = useState<Member[]>([])
+   // Local-only draft cards not yet persisted (negative-keyed by client id).
+   const [drafts, setDrafts] = useState<DraftMember[]>([])
++  const [staples, setStaples] = useState<PantryStapleDto[]>([])
++  const [stapleDraft, setStapleDraft] = useState('')
++  const [stapleError, setStapleError] = useState<string | null>(null)
+ 
+   useEffect(() => {
+     Promise.all([
+       fetch('/api/household').then((r) => r.json()),
+       fetch('/api/household/members').then((r) => r.json()),
++      fetch('/api/household/pantry-staples').then((r) => r.json()),
+     ])
+       .then(
+-        ([h, m]: [
++        ([h, m, s]: [
+           {
+             name: string | null
+             preferencesText: string | null
+@@ -53,6 +57,7 @@ export default function HouseholdPage() {
+             showMacrosInChat: boolean | null
+           },
+           { members: Member[] },
++          { staples: PantryStapleDto[] },
+         ]) => {
+           setName(h.name ?? '')
+           setValue(h.preferencesText ?? '')
+@@ -61,6 +66,7 @@ export default function HouseholdPage() {
+           setEquipment(h.equipment ?? [])
+           setShowMacrosInChat(h.showMacrosInChat ?? true)
+           setMembers(m.members ?? [])
++          setStaples(s.staples ?? [])
+           setLoading(false)
+         },
+       )
+@@ -146,6 +152,36 @@ export default function HouseholdPage() {
+     setMembers((m) => m.filter((x) => x.id !== id))
+   }
+ 
++  const addStaple = async () => {
++    // Client-side empty/whitespace validation before firing the request.
++    const trimmed = stapleDraft.trim()
++    if (!trimmed) {
++      setStapleError('Enter a name')
++      return
++    }
++    const res = await fetch('/api/household/pantry-staples', {
++      method: 'POST',
++      headers: { 'Content-Type': 'application/json' },
++      body: JSON.stringify({ name: trimmed }),
++    })
++    if (res.status === 201) {
++      const { staple } = (await res.json()) as { staple: PantryStapleDto }
++      setStaples((prev) => [...prev, staple])
++      setStapleDraft('')
++      setStapleError(null)
++      return
++    }
++    // 409 duplicate (or any other error) — surface the server message inline
++    // and leave local state untouched.
++    const body = (await res.json().catch(() => null)) as { error?: string } | null
++    setStapleError(body?.error ?? 'Something went wrong — try again.')
++  }
++
++  const deleteStaple = async (id: string) => {
++    await fetch(`/api/household/pantry-staples/${id}`, { method: 'DELETE' })
++    setStaples((prev) => prev.filter((s) => s.id !== id))
++  }
++
+   const logout = async () => {
+     await fetch('/api/auth/logout', { method: 'POST' })
+     // Full navigation so the middleware re-runs against the cleared cookie.
+@@ -548,6 +584,110 @@ export default function HouseholdPage() {
+           </Button>
+         </div>
+ 
++        {/* ── Pantry staples ──────────────────────────────────────────── */}
++        <div
++          style={{
++            marginTop: 34,
++            fontSize: 18,
++            fontWeight: 700,
++            color: 'var(--text)',
++            letterSpacing: -0.2,
++          }}
++        >
++          Pantry staples
++        </div>
++        <div style={{ marginTop: 8, fontSize: 14, lineHeight: 1.6, color: 'var(--text-2)' }}>
++          Everyday items you always have on hand. We&apos;ll leave these off your shopping list.
++        </div>
++
++        <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'stretch' }}>
++          <input
++            value={stapleDraft}
++            onChange={(e) => {
++              setStapleDraft(e.target.value)
++              if (stapleError) setStapleError(null)
++            }}
++            onKeyDown={(e) => {
++              if (e.key === 'Enter') {
++                e.preventDefault()
++                void addStaple()
++              }
++            }}
++            placeholder="e.g. olive oil"
++            disabled={loading}
++            maxLength={60}
++            style={{ ...inputBase, flex: 1, minWidth: 0 }}
++          />
++          <button
++            onClick={() => void addStaple()}
++            disabled={loading}
++            style={{
++              flexShrink: 0,
++              padding: '0 18px',
++              borderRadius: 12,
++              fontSize: 15,
++              fontWeight: 600,
++              color: 'var(--on-accent)',
++              background: 'var(--accent)',
++              border: 'none',
++              opacity: loading ? 0.5 : 1,
++            }}
++          >
++            Add
++          </button>
++        </div>
++
++        {stapleError && (
++          <div style={{ marginTop: 8, fontSize: 13.5, color: 'var(--terracotta)' }}>
++            {stapleError}
++          </div>
++        )}
++
++        {!loading && staples.length === 0 ? (
++          <div style={{ marginTop: 14, fontSize: 13.5, lineHeight: 1.5, color: 'var(--text-3)' }}>
++            No pantry staples yet — add everyday items like salt, olive oil, or garlic so we can
++            leave them off your shopping list.
++          </div>
++        ) : (
++          <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
++            {staples.map((s) => (
++              <div
++                key={s.id}
++                style={{
++                  display: 'flex',
++                  alignItems: 'center',
++                  gap: 10,
++                  padding: '11px 14px',
++                  borderRadius: 12,
++                  border: '1px solid var(--border)',
++                  background: 'var(--surface)',
++                }}
++              >
++                <span style={{ flex: 1, minWidth: 0, fontSize: 15, color: 'var(--text)' }}>
++                  {s.name}
++                </span>
++                <button
++                  onClick={() => void deleteStaple(s.id)}
++                  aria-label={`Remove ${s.name}`}
++                  style={{
++                    flexShrink: 0,
++                    width: 28,
++                    height: 28,
++                    borderRadius: 999,
++                    fontSize: 16,
++                    lineHeight: 1,
++                    color: 'var(--text-3)',
++                    background: 'transparent',
++                    border: '1px solid var(--border)',
++                  }}
++                >
++                  ×
++                </button>
++              </div>
++            ))}
++          </div>
++        )}
++
+         {/* ── Account ─────────────────────────────────────────────────── */}
+         <div style={{ marginTop: 40, paddingTop: 24, borderTop: '1px solid var(--border)' }}>
+           <button
+diff --git a/app/shopping/page.tsx b/app/shopping/page.tsx
+index ed1ac88..498cf5f 100644
+--- a/app/shopping/page.tsx
++++ b/app/shopping/page.tsx
+@@ -12,12 +12,22 @@
+ // basket, no spinners. Refresh/build round-trip through the server and simply
+ // replace local state with the response, since those already return the full
+ // authoritative list.
+-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
++import {
++  useCallback,
++  useEffect,
++  useMemo,
++  useRef,
++  useState,
++  type CSSProperties,
++  type ReactNode,
++} from 'react'
+ import { useRouter } from 'next/navigation'
+ import { Button, Toast } from '@/components/ui'
+ import { MEAL_TYPE_LABEL } from '@/lib/meal-types'
++import { normalizeName } from '@/lib/normalize'
+ import {
+   groupItemsBySection,
++  partitionAssumedOnHand,
+   progressCount,
+   formatListAsText,
+   shortWeekday,
+@@ -33,6 +43,7 @@ type Item = {
+   id: string
+   source: 'recipe' | 'manual' | 'staple'
+   name: string
++  nameNorm: string
+   quantity: string | null
+   category: StoreSection
+   sourceLines: SourceLine[]
+@@ -49,6 +60,7 @@ export default function ShoppingPage() {
+   // undefined = first load hasn't resolved yet; null = no active list.
+   const [list, setList] = useState<ListMeta | null | undefined>(undefined)
+   const [items, setItems] = useState<Item[]>([])
++  const [staples, setStaples] = useState<{ id: string; name: string }[]>([])
+   const [errored, setErrored] = useState(false)
+   const [retryKey, setRetryKey] = useState(0)
+   const [toast, setToast] = useState<string | null>(null)
+@@ -96,14 +108,29 @@ export default function ShoppingPage() {
+ 
+   useEffect(() => {
+     let active = true
+-    fetch('/api/shopping-list')
+-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('fetch failed'))))
+-      .then((data: { list: ListMeta | null; items: Item[] }) => {
+-        if (!active) return
+-        setList(data.list)
+-        setItems(data.items ?? [])
+-        setErrored(false)
+-      })
++    // Staples are an enhancement over the core buy-list, so their fetch is
++    // isolated: a failure leaves `staples` empty and must NOT block or error
++    // the page (hence the local .catch(() => ({ staples: [] }))).
++    Promise.all([
++      fetch('/api/shopping-list').then((r) =>
++        r.ok ? r.json() : Promise.reject(new Error('fetch failed')),
++      ),
++      fetch('/api/household/pantry-staples')
++        .then((r) => (r.ok ? r.json() : { staples: [] }))
++        .catch(() => ({ staples: [] })),
++    ])
++      .then(
++        ([listData, staplesData]: [
++          { list: ListMeta | null; items: Item[] },
++          { staples: { id: string; name: string }[] },
++        ]) => {
++          if (!active) return
++          setList(listData.list)
++          setItems(listData.items ?? [])
++          setStaples(staplesData.staples ?? [])
++          setErrored(false)
++        },
++      )
+       .catch(() => {
+         if (active) setErrored(true)
+       })
+@@ -112,6 +139,18 @@ export default function ShoppingPage() {
+     }
+   }, [retryKey])
+ 
++  // Household pantry staples, normalized with the same treatment used for
++  // shopping_list_items.name_norm, so an exact set-membership test partitions
++  // the current items into buy-list vs. assumed-on-hand.
++  const stapleNormNames = useMemo(
++    () => new Set(staples.map((s) => normalizeName(s.name))),
++    [staples],
++  )
++  const { buyItems, assumedOnHand } = useMemo(
++    () => partitionAssumedOnHand(items, stapleNormNames),
++    [items, stapleNormNames],
++  )
++
+   const toggleChecked = useCallback(
+     (item: Item) => {
+       const next = !item.checked
+@@ -216,14 +255,16 @@ export default function ShoppingPage() {
+   )
+ 
+   const copyAsText = useCallback(async () => {
+-    const text = formatListAsText(items)
++    // Buy list only — assumed-on-hand items are things you're skipping, so
++    // they don't belong in the copied text either.
++    const text = formatListAsText(buyItems)
+     try {
+       await navigator.clipboard.writeText(text)
+       showToast('Copied — paste it anywhere.')
+     } catch {
+       showToast('Couldn’t copy — try again')
+     }
+-  }, [items, showToast])
++  }, [buyItems, showToast])
+ 
+   const refresh = useCallback(async () => {
+     try {
+@@ -273,8 +314,8 @@ export default function ShoppingPage() {
+     )
+   }
+ 
+-  const groups = groupItemsBySection(items)
+-  const { checked, total } = progressCount(items)
++  const groups = groupItemsBySection(buyItems)
++  const { checked, total } = progressCount(buyItems)
+ 
+   return (
+     <Shell>
+@@ -325,6 +366,23 @@ export default function ShoppingPage() {
+             onDelete={deleteItem}
+           />
+         ))}
++        {assumedOnHand.length > 0 && (
++          // Visually de-emphasized (same "secondary, not disabled" precedent as
++          // ItemRow's ghost dimming) — these matched a pantry staple, so
++          // they're pulled out of the buy-list groups but stay fully
++          // interactive (check/expand/delete all still work).
++          <div style={{ opacity: 0.6 }}>
++            <Section
++              label="Assumed on hand"
++              subcopy="Matches your pantry staples — skip buying these."
++              items={assumedOnHand}
++              expandedId={expandedId}
++              onToggleExpand={(id) => setExpandedId((prev) => (prev === id ? null : id))}
++              onToggleChecked={toggleChecked}
++              onDelete={deleteItem}
++            />
++          </div>
++        )}
+       </div>
+ 
+       <AddItemBar onAdd={addItem} />
+@@ -491,6 +549,7 @@ function EmptyState({ onBuild }: { onBuild: () => void }) {
+ // ── Sections & rows ──────────────────────────────────────────────────────
+ function Section({
+   label,
++  subcopy,
+   items,
+   expandedId,
+   onToggleExpand,
+@@ -498,6 +557,7 @@ function Section({
+   onDelete,
+ }: {
+   label: string
++  subcopy?: string
+   items: Item[]
+   expandedId: string | null
+   onToggleExpand: (id: string) => void
+@@ -518,6 +578,11 @@ function Section({
+       >
+         {label}
+       </div>
++      {subcopy && (
++        <div style={{ fontSize: 12, color: 'var(--text-3)', padding: '0 8px 8px', lineHeight: 1.5 }}>
++          {subcopy}
++        </div>
++      )}
+       <div style={{ background: 'var(--surface)', borderRadius: 16, border: '1px solid var(--border)', overflow: 'hidden' }}>
+         {items.map((item, i) => (
+           <ItemRow
+diff --git a/db/schema.ts b/db/schema.ts
+index 40caa7f..7566f3f 100644
+--- a/db/schema.ts
++++ b/db/schema.ts
+@@ -94,6 +94,30 @@ export const familyMembers = pgTable('family_members', {
+   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+ })
+ 
++// ── pantry_staples ────────────────────────────────────────────────────────
++// Household-scoped items a household always has on hand (salt, olive oil, …).
++// Later used to filter matching items out of the shopping list. `normalized_name`
++// is the lowercased, punctuation-stripped, whitespace-collapsed form of the name
++// (lib/normalize.ts `normalizeName()`) and the merge/match key. Unique on
++// (household_id, normalized_name) so a household can't have two staples with the
++// same name. Cascades on household delete — disposable household config, like
++// meal_log / cookbook_recipes / shopping_lists.
++export const pantryStaples = pgTable(
++  'pantry_staples',
++  {
++    id: uuid('id').primaryKey().defaultRandom(),
++    householdId: uuid('household_id')
++      .notNull()
++      .references(() => households.id, { onDelete: 'cascade' }),
++    name: text('name').notNull(),
++    normalizedName: text('normalized_name').notNull(),
++    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
++  },
++  (t) => [
++    unique('pantry_staples_household_norm_uq').on(t.householdId, t.normalizedName),
++  ],
++)
++
+ // ── meal_slots ────────────────────────────────────────────────────────────
+ // One row per (household, date, meal type) — confirmed meal OR skip state.
+ // Accepting a recommendation upserts here; re-accepting overwrites. `status`
+@@ -509,3 +533,4 @@ export type CookbookRecipe = typeof cookbookRecipes.$inferSelect
+ export type CookbookUpload = typeof cookbookUploads.$inferSelect
+ export type ShoppingList = typeof shoppingLists.$inferSelect
+ export type ShoppingListItem = typeof shoppingListItems.$inferSelect
++export type PantryStaple = typeof pantryStaples.$inferSelect
+diff --git a/drizzle/0016_premium_moira_mactaggert.sql b/drizzle/0016_premium_moira_mactaggert.sql
+new file mode 100644
+index 0000000..a1f3d3f
+--- /dev/null
++++ b/drizzle/0016_premium_moira_mactaggert.sql
+@@ -0,0 +1,10 @@
++CREATE TABLE "pantry_staples" (
++	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
++	"household_id" uuid NOT NULL,
++	"name" text NOT NULL,
++	"normalized_name" text NOT NULL,
++	"created_at" timestamp with time zone DEFAULT now(),
++	CONSTRAINT "pantry_staples_household_norm_uq" UNIQUE("household_id","normalized_name")
++);
++--> statement-breakpoint
++ALTER TABLE "pantry_staples" ADD CONSTRAINT "pantry_staples_household_id_households_id_fk" FOREIGN KEY ("household_id") REFERENCES "public"."households"("id") ON DELETE cascade ON UPDATE no action;
+\ No newline at end of file
+diff --git a/drizzle/meta/0016_snapshot.json b/drizzle/meta/0016_snapshot.json
+new file mode 100644
+index 0000000..cfdc249
+--- /dev/null
++++ b/drizzle/meta/0016_snapshot.json
+@@ -0,0 +1,1373 @@
++{
++  "id": "c99d6aa6-74a0-44ce-a17d-497b60e56a0d",
++  "prevId": "4fc155e6-af6a-44e3-8837-97b8d683e55d",
++  "version": "7",
++  "dialect": "postgresql",
++  "tables": {
++    "public.changelog_entries": {
++      "name": "changelog_entries",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "version": {
++          "name": "version",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "released_at": {
++          "name": "released_at",
++          "type": "date",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "category": {
++          "name": "category",
++          "type": "changelog_category",
++          "typeSchema": "public",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "description": {
++          "name": "description",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "sort_order": {
++          "name": "sort_order",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.chat_threads": {
++      "name": "chat_threads",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "slot_date": {
++          "name": "slot_date",
++          "type": "date",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "meal_type": {
++          "name": "meal_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'dinner'"
++        },
++        "messages": {
++          "name": "messages",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'[]'::jsonb"
++        },
++        "attendee_ids": {
++          "name": "attendee_ids",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        },
++        "summary": {
++          "name": "summary",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "chat_threads_household_id_households_id_fk": {
++          "name": "chat_threads_household_id_households_id_fk",
++          "tableFrom": "chat_threads",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "chat_threads_household_date_meal_uq": {
++          "name": "chat_threads_household_date_meal_uq",
++          "nullsNotDistinct": false,
++          "columns": [
++            "household_id",
++            "slot_date",
++            "meal_type"
++          ]
++        }
++      },
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.cookbook_recipes": {
++      "name": "cookbook_recipes",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "origin": {
++          "name": "origin",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "origin_recipe_id": {
++          "name": "origin_recipe_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "title": {
++          "name": "title",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "details": {
++          "name": "details",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "image_url": {
++          "name": "image_url",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "cuisines": {
++          "name": "cuisines",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'[]'::jsonb"
++        },
++        "is_favorite": {
++          "name": "is_favorite",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "household_note": {
++          "name": "household_note",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "last_cooked_at": {
++          "name": "last_cooked_at",
++          "type": "date",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "cookbook_recipes_household_origin_uq": {
++          "name": "cookbook_recipes_household_origin_uq",
++          "columns": [
++            {
++              "expression": "household_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "origin_recipe_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": true,
++          "where": "\"cookbook_recipes\".\"origin_recipe_id\" is not null",
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "cookbook_recipes_household_id_households_id_fk": {
++          "name": "cookbook_recipes_household_id_households_id_fk",
++          "tableFrom": "cookbook_recipes",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.cookbook_uploads": {
++      "name": "cookbook_uploads",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "recipe_id": {
++          "name": "recipe_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "storage_key": {
++          "name": "storage_key",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "content_type": {
++          "name": "content_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "byte_size": {
++          "name": "byte_size",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'uploaded'"
++        },
++        "kind": {
++          "name": "kind",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "parse_result": {
++          "name": "parse_result",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "parse_error": {
++          "name": "parse_error",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "model": {
++          "name": "model",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        },
++        "parsed_at": {
++          "name": "parsed_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "cookbook_uploads_household_id_households_id_fk": {
++          "name": "cookbook_uploads_household_id_households_id_fk",
++          "tableFrom": "cookbook_uploads",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        },
++        "cookbook_uploads_recipe_id_cookbook_recipes_id_fk": {
++          "name": "cookbook_uploads_recipe_id_cookbook_recipes_id_fk",
++          "tableFrom": "cookbook_uploads",
++          "tableTo": "cookbook_recipes",
++          "columnsFrom": [
++            "recipe_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "set null",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.family_members": {
++      "name": "family_members",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "allergies": {
++          "name": "allergies",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'[]'::jsonb"
++        },
++        "preferences": {
++          "name": "preferences",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "family_members_household_id_households_id_fk": {
++          "name": "family_members_household_id_households_id_fk",
++          "tableFrom": "family_members",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.feedback": {
++      "name": "feedback",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "type": {
++          "name": "type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "message": {
++          "name": "message",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "page_path": {
++          "name": "page_path",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "feedback_household_id_households_id_fk": {
++          "name": "feedback_household_id_households_id_fk",
++          "tableFrom": "feedback",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "set null",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.households": {
++      "name": "households",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "clerk_user_id": {
++          "name": "clerk_user_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "username": {
++          "name": "username",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "password_hash": {
++          "name": "password_hash",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "preferences_text": {
++          "name": "preferences_text",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "planned_meal_types": {
++          "name": "planned_meal_types",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'[\"dinner\"]'::jsonb"
++        },
++        "cooking_skill_level": {
++          "name": "cooking_skill_level",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "equipment": {
++          "name": "equipment",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "show_macros_in_chat": {
++          "name": "show_macros_in_chat",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": true
++        },
++        "onboarded_at": {
++          "name": "onboarded_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "households_username_unique": {
++          "name": "households_username_unique",
++          "nullsNotDistinct": false,
++          "columns": [
++            "username"
++          ]
++        }
++      },
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.meal_log": {
++      "name": "meal_log",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "meal_type": {
++          "name": "meal_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'dinner'"
++        },
++        "recipe_id": {
++          "name": "recipe_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "meal_name": {
++          "name": "meal_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "meal_name_norm": {
++          "name": "meal_name_norm",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "rating": {
++          "name": "rating",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "feedback_note": {
++          "name": "feedback_note",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "served_at": {
++          "name": "served_at",
++          "type": "date",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "meal_log_household_id_households_id_fk": {
++          "name": "meal_log_household_id_households_id_fk",
++          "tableFrom": "meal_log",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "meal_log_household_served_meal_norm_uq": {
++          "name": "meal_log_household_served_meal_norm_uq",
++          "nullsNotDistinct": false,
++          "columns": [
++            "household_id",
++            "served_at",
++            "meal_type",
++            "meal_name_norm"
++          ]
++        }
++      },
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.meal_slots": {
++      "name": "meal_slots",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "slot_date": {
++          "name": "slot_date",
++          "type": "date",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "meal_type": {
++          "name": "meal_type",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'dinner'"
++        },
++        "recipe_id": {
++          "name": "recipe_id",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "recipe_name": {
++          "name": "recipe_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "recipe_snapshot": {
++          "name": "recipe_snapshot",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'confirmed'"
++        },
++        "skip_label": {
++          "name": "skip_label",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "planned_via": {
++          "name": "planned_via",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'chat'"
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "meal_slots_household_id_households_id_fk": {
++          "name": "meal_slots_household_id_households_id_fk",
++          "tableFrom": "meal_slots",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "meal_slots_household_date_meal_uq": {
++          "name": "meal_slots_household_date_meal_uq",
++          "nullsNotDistinct": false,
++          "columns": [
++            "household_id",
++            "slot_date",
++            "meal_type"
++          ]
++        }
++      },
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.pantry_staples": {
++      "name": "pantry_staples",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "normalized_name": {
++          "name": "normalized_name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "pantry_staples_household_id_households_id_fk": {
++          "name": "pantry_staples_household_id_households_id_fk",
++          "tableFrom": "pantry_staples",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "pantry_staples_household_norm_uq": {
++          "name": "pantry_staples_household_norm_uq",
++          "nullsNotDistinct": false,
++          "columns": [
++            "household_id",
++            "normalized_name"
++          ]
++        }
++      },
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.sessions": {
++      "name": "sessions",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        },
++        "expires_at": {
++          "name": "expires_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "sessions_household_id_households_id_fk": {
++          "name": "sessions_household_id_households_id_fk",
++          "tableFrom": "sessions",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.shopping_list_items": {
++      "name": "shopping_list_items",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "list_id": {
++          "name": "list_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "source": {
++          "name": "source",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "name": {
++          "name": "name",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "name_norm": {
++          "name": "name_norm",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "quantity": {
++          "name": "quantity",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "category": {
++          "name": "category",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'other'"
++        },
++        "source_lines": {
++          "name": "source_lines",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'[]'::jsonb"
++        },
++        "allergy_flags": {
++          "name": "allergy_flags",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'[]'::jsonb"
++        },
++        "note": {
++          "name": "note",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "checked": {
++          "name": "checked",
++          "type": "boolean",
++          "primaryKey": false,
++          "notNull": true,
++          "default": false
++        },
++        "checked_at": {
++          "name": "checked_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "sort_order": {
++          "name": "sort_order",
++          "type": "integer",
++          "primaryKey": false,
++          "notNull": true,
++          "default": 0
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "shopping_list_items_list_name_recipe_uq": {
++          "name": "shopping_list_items_list_name_recipe_uq",
++          "columns": [
++            {
++              "expression": "list_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            },
++            {
++              "expression": "name_norm",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": true,
++          "where": "\"shopping_list_items\".\"source\" = 'recipe'",
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "shopping_list_items_list_id_shopping_lists_id_fk": {
++          "name": "shopping_list_items_list_id_shopping_lists_id_fk",
++          "tableFrom": "shopping_list_items",
++          "tableTo": "shopping_lists",
++          "columnsFrom": [
++            "list_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        },
++        "shopping_list_items_household_id_households_id_fk": {
++          "name": "shopping_list_items_household_id_households_id_fk",
++          "tableFrom": "shopping_list_items",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.shopping_lists": {
++      "name": "shopping_lists",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "status": {
++          "name": "status",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'active'"
++        },
++        "slot_selection": {
++          "name": "slot_selection",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "multipliers": {
++          "name": "multipliers",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'{}'::jsonb"
++        },
++        "model": {
++          "name": "model",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        },
++        "updated_at": {
++          "name": "updated_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {
++        "shopping_lists_household_active_uq": {
++          "name": "shopping_lists_household_active_uq",
++          "columns": [
++            {
++              "expression": "household_id",
++              "isExpression": false,
++              "asc": true,
++              "nulls": "last"
++            }
++          ],
++          "isUnique": true,
++          "where": "\"shopping_lists\".\"status\" = 'active'",
++          "concurrently": false,
++          "method": "btree",
++          "with": {}
++        }
++      },
++      "foreignKeys": {
++        "shopping_lists_household_id_households_id_fk": {
++          "name": "shopping_lists_household_id_households_id_fk",
++          "tableFrom": "shopping_lists",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "cascade",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.web_recipe_cache": {
++      "name": "web_recipe_cache",
++      "schema": "",
++      "columns": {
++        "url_hash": {
++          "name": "url_hash",
++          "type": "text",
++          "primaryKey": true,
++          "notNull": true
++        },
++        "url": {
++          "name": "url",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "source": {
++          "name": "source",
++          "type": "text",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "snapshot": {
++          "name": "snapshot",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "fetched_at": {
++          "name": "fetched_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {},
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {},
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    },
++    "public.week_plan_threads": {
++      "name": "week_plan_threads",
++      "schema": "",
++      "columns": {
++        "id": {
++          "name": "id",
++          "type": "uuid",
++          "primaryKey": true,
++          "notNull": true,
++          "default": "gen_random_uuid()"
++        },
++        "household_id": {
++          "name": "household_id",
++          "type": "uuid",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "week_start": {
++          "name": "week_start",
++          "type": "date",
++          "primaryKey": false,
++          "notNull": true
++        },
++        "messages": {
++          "name": "messages",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'[]'::jsonb"
++        },
++        "draft": {
++          "name": "draft",
++          "type": "jsonb",
++          "primaryKey": false,
++          "notNull": true,
++          "default": "'{}'::jsonb"
++        },
++        "busy_until": {
++          "name": "busy_until",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false
++        },
++        "created_at": {
++          "name": "created_at",
++          "type": "timestamp with time zone",
++          "primaryKey": false,
++          "notNull": false,
++          "default": "now()"
++        }
++      },
++      "indexes": {},
++      "foreignKeys": {
++        "week_plan_threads_household_id_households_id_fk": {
++          "name": "week_plan_threads_household_id_households_id_fk",
++          "tableFrom": "week_plan_threads",
++          "tableTo": "households",
++          "columnsFrom": [
++            "household_id"
++          ],
++          "columnsTo": [
++            "id"
++          ],
++          "onDelete": "no action",
++          "onUpdate": "no action"
++        }
++      },
++      "compositePrimaryKeys": {},
++      "uniqueConstraints": {
++        "week_plan_threads_household_week_uq": {
++          "name": "week_plan_threads_household_week_uq",
++          "nullsNotDistinct": false,
++          "columns": [
++            "household_id",
++            "week_start"
++          ]
++        }
++      },
++      "policies": {},
++      "checkConstraints": {},
++      "isRLSEnabled": false
++    }
++  },
++  "enums": {
++    "public.changelog_category": {
++      "name": "changelog_category",
++      "schema": "public",
++      "values": [
++        "added",
++        "changed",
++        "fixed",
++        "removed"
++      ]
++    }
++  },
++  "schemas": {},
++  "sequences": {},
++  "roles": {},
++  "policies": {},
++  "views": {},
++  "_meta": {
++    "columns": {},
++    "schemas": {},
++    "tables": {}
++  }
++}
+\ No newline at end of file
+diff --git a/drizzle/meta/_journal.json b/drizzle/meta/_journal.json
+index a4e1742..480b363 100644
+--- a/drizzle/meta/_journal.json
++++ b/drizzle/meta/_journal.json
+@@ -113,6 +113,13 @@
+       "when": 1783363635344,
+       "tag": "0015_recipe_macros",
+       "breakpoints": true
++    },
++    {
++      "idx": 16,
++      "version": "7",
++      "when": 1783451957485,
++      "tag": "0016_premium_moira_mactaggert",
++      "breakpoints": true
+     }
+   ]
+ }
+\ No newline at end of file
+diff --git a/lib/pantry-staples.test.ts b/lib/pantry-staples.test.ts
+new file mode 100644
+index 0000000..cc0d595
+--- /dev/null
++++ b/lib/pantry-staples.test.ts
+@@ -0,0 +1,39 @@
++import { describe, expect, it } from 'vitest'
++import { normalizeStapleInput } from './pantry-staples'
++
++describe('normalizeStapleInput', () => {
++  it('accepts and trims a valid name', () => {
++    expect(normalizeStapleInput({ name: '  Olive Oil  ' })).toEqual({
++      value: { name: 'Olive Oil' },
++    })
++  })
++
++  it('collapses internal control characters to a space', () => {
++    expect(normalizeStapleInput({ name: 'olive\noil' })).toEqual({
++      value: { name: 'olive oil' },
++    })
++  })
++
++  it('rejects a non-object body', () => {
++    expect('error' in normalizeStapleInput(null)).toBe(true)
++    expect('error' in normalizeStapleInput('salt')).toBe(true)
++  })
++
++  it('rejects a missing/non-string name', () => {
++    expect('error' in normalizeStapleInput({})).toBe(true)
++    expect('error' in normalizeStapleInput({ name: 5 })).toBe(true)
++  })
++
++  it('rejects an empty / whitespace-only name', () => {
++    expect(normalizeStapleInput({ name: '' })).toEqual({ error: 'name is required' })
++    expect(normalizeStapleInput({ name: '   ' })).toEqual({ error: 'name is required' })
++    expect(normalizeStapleInput({ name: '\n\t ' })).toEqual({ error: 'name is required' })
++  })
++
++  it('rejects a name over 60 chars (after trim)', () => {
++    expect('error' in normalizeStapleInput({ name: 'a'.repeat(61) })).toBe(true)
++    expect(normalizeStapleInput({ name: 'a'.repeat(60) })).toEqual({
++      value: { name: 'a'.repeat(60) },
++    })
++  })
++})
+diff --git a/lib/pantry-staples.ts b/lib/pantry-staples.ts
+new file mode 100644
+index 0000000..265025c
+--- /dev/null
++++ b/lib/pantry-staples.ts
+@@ -0,0 +1,34 @@
++// Validation + normalization for pantry-staple create payloads. Pure (no
++// db/network) so it's unit-testable and the route stays thin — same split as
++// lib/members.ts / lib/shopping/validate.ts. A staple is just a short name
++// ("olive oil", "salt", "garlic"); the route derives normalizedName from it.
++import { sanitizeLine } from '@/lib/shopping/validate'
++
++// Staples are short everyday-pantry items — much tighter than the 200-char cap
++// used for shopping-list names. Anything longer is almost certainly a paste
++// accident, not a staple name.
++export const NAME_MAX = 60
++
++export function normalizeStapleInput(
++  body: unknown,
++): { value: { name: string } } | { error: string } {
++  if (typeof body !== 'object' || body === null) {
++    return { error: 'invalid body' }
++  }
++  const b = body as Record<string, unknown>
++
++  if (typeof b.name !== 'string') {
++    return { error: 'name is required' }
++  }
++  // Collapse pasted newlines/tabs to spaces first (same as the shopping-list
++  // name path), then trim.
++  const name = sanitizeLine(b.name).trim()
++  if (!name) {
++    return { error: 'name is required' }
++  }
++  if (name.length > NAME_MAX) {
++    return { error: `name must be at most ${NAME_MAX} characters` }
++  }
++
++  return { value: { name } }
++}
+diff --git a/lib/shopping/format.test.ts b/lib/shopping/format.test.ts
+index a0b3951..e618563 100644
+--- a/lib/shopping/format.test.ts
++++ b/lib/shopping/format.test.ts
+@@ -1,6 +1,12 @@
+ import { describe, expect, it } from 'vitest'
+ import type { ShoppingListItem } from '@/db/schema'
+-import { formatListAsText, groupItemsBySection, progressCount, shortWeekday } from './format'
++import {
++  formatListAsText,
++  groupItemsBySection,
++  partitionAssumedOnHand,
++  progressCount,
++  shortWeekday,
++} from './format'
+ import type { SourceLine, StoreSection } from './types'
+ 
+ const sourceLine: SourceLine = {
+@@ -118,6 +124,58 @@ describe('formatListAsText', () => {
+   })
+ })
+ 
++describe('partitionAssumedOnHand', () => {
++  it('puts everything in buyItems when there are no staples', () => {
++    const items = [
++      item({ name: 'Cilantro', nameNorm: 'cilantro' }),
++      item({ name: 'Milk', nameNorm: 'milk' }),
++    ]
++    const { buyItems, assumedOnHand } = partitionAssumedOnHand(items, new Set())
++    expect(buyItems).toEqual(items)
++    expect(assumedOnHand).toEqual([])
++  })
++
++  it('pulls a matching item into assumedOnHand and out of buyItems', () => {
++    const items = [
++      item({ name: 'Cilantro', nameNorm: 'cilantro' }),
++      item({ name: 'Salt', nameNorm: 'salt' }),
++    ]
++    const { buyItems, assumedOnHand } = partitionAssumedOnHand(items, new Set(['salt']))
++    expect(buyItems.map((i) => i.name)).toEqual(['Cilantro'])
++    expect(assumedOnHand.map((i) => i.name)).toEqual(['Salt'])
++  })
++
++  it('has no effect for a staple that matches no current item', () => {
++    const items = [item({ name: 'Cilantro', nameNorm: 'cilantro' })]
++    const { buyItems, assumedOnHand } = partitionAssumedOnHand(items, new Set(['olive oil']))
++    expect(buyItems).toEqual(items)
++    expect(assumedOnHand).toEqual([])
++  })
++
++  it('matches multiple items against different staples', () => {
++    const items = [
++      item({ name: 'Salt', nameNorm: 'salt' }),
++      item({ name: 'Cilantro', nameNorm: 'cilantro' }),
++      item({ name: 'Olive Oil', nameNorm: 'olive oil' }),
++    ]
++    const { buyItems, assumedOnHand } = partitionAssumedOnHand(items, new Set(['salt', 'olive oil']))
++    expect(buyItems.map((i) => i.name)).toEqual(['Cilantro'])
++    expect(assumedOnHand.map((i) => i.name)).toEqual(['Salt', 'Olive Oil'])
++  })
++
++  it('preserves relative order within each output array (stable partition)', () => {
++    const items = [
++      item({ name: 'Salt', nameNorm: 'salt' }),
++      item({ name: 'Cilantro', nameNorm: 'cilantro' }),
++      item({ name: 'Pepper', nameNorm: 'pepper' }),
++      item({ name: 'Milk', nameNorm: 'milk' }),
++    ]
++    const { buyItems, assumedOnHand } = partitionAssumedOnHand(items, new Set(['salt', 'pepper']))
++    expect(assumedOnHand.map((i) => i.name)).toEqual(['Salt', 'Pepper'])
++    expect(buyItems.map((i) => i.name)).toEqual(['Cilantro', 'Milk'])
++  })
++})
++
+ describe('shortWeekday', () => {
+   it('maps an ISO date to its 3-letter weekday', () => {
+     // 2026-07-08 is a Wednesday.
+diff --git a/lib/shopping/format.ts b/lib/shopping/format.ts
+index 9f90bef..51d3f94 100644
+--- a/lib/shopping/format.ts
++++ b/lib/shopping/format.ts
+@@ -67,6 +67,27 @@ export function progressCount<T extends ProgressItem>(items: T[]): { checked: nu
+   return { checked: counted.filter((i) => i.checked).length, total: counted.length }
+ }
+ 
++// Splits items into what still needs buying vs. what's already assumed on
++// hand because it matches a household pantry staple (exact name_norm match —
++// same merge-key convention as the rest of the shopping list). Only staples
++// that actually match a CURRENT item are surfaced this way — the household's
++// full staple list is never shown here, just the overlap.
++type NormedItem = { nameNorm: string }
++
++export function partitionAssumedOnHand<T extends NormedItem>(
++  items: T[],
++  stapleNormNames: ReadonlySet<string>,
++): { buyItems: T[]; assumedOnHand: T[] } {
++  if (stapleNormNames.size === 0) return { buyItems: items, assumedOnHand: [] }
++  const buyItems: T[] = []
++  const assumedOnHand: T[] = []
++  for (const item of items) {
++    if (stapleNormNames.has(item.nameNorm)) assumedOnHand.push(item)
++    else buyItems.push(item)
++  }
++  return { buyItems, assumedOnHand }
++}
++
+ // Copy-as-text (Flow 6): sections as headers, one "- quantity name" line per
+ // UNCHECKED item (checked items are omitted — they're handled). Sections with
+ // no unchecked items are skipped entirely. Blocks are separated by a blank
+diff --git a/lib/types.ts b/lib/types.ts
+index fe64230..bc522ff 100644
+--- a/lib/types.ts
++++ b/lib/types.ts
+@@ -151,6 +151,11 @@ export type Member = {
+   preferences: string | null
+ }
+ 
++// A pantry staple as surfaced to the household profile UI. Mirrors the
++// pantry_staples row minus tenant/internal columns (normalizedName never
++// leaves the server).
++export type PantryStapleDto = { id: string; name: string }
++
+ // ── Cookbook ───────────────────────────────────────────────────────────────
+ // See docs/project/cookbook-steel-thread.md "Contracts first".
+ 
+diff --git a/package-lock.json b/package-lock.json
+index 15d01d0..18e23a5 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -7222,7 +7222,6 @@
+       "version": "2.3.2",
+       "resolved": "https://registry.npmjs.org/fsevents/-/fsevents-2.3.2.tgz",
+       "integrity": "sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==",
+-      "dev": true,
+       "hasInstallScript": true,
+       "license": "MIT",
+       "optional": true,
+@@ -9073,474 +9072,6 @@
+         }
+       }
+     },
+-    "node_modules/vitest/node_modules/@esbuild/aix-ppc64": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/aix-ppc64/-/aix-ppc64-0.28.1.tgz",
+-      "integrity": "sha512-Svl7tq8k/08+p6CXPpRjQ1fKX+1odH/BQbb48fV6fj3CWHhsoIOoY87w1oHXm0qEpkIK3ZfVgp0hed3XBXzXMQ==",
+-      "cpu": [
+-        "ppc64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "aix"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/android-arm": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/android-arm/-/android-arm-0.28.1.tgz",
+-      "integrity": "sha512-0k2F129Xdio1TdJfzJ8sy1Q47vUD2NnwdhiAf7drUN1EBTfPf4hsFCtmMgu/6m8JSzsBrlmVjudMBQqOfG8usQ==",
+-      "cpu": [
+-        "arm"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "android"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/android-arm64": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/android-arm64/-/android-arm64-0.28.1.tgz",
+-      "integrity": "sha512-34EGEbCIAgosYz6goLcopX6Mo7NyGv9tfwEM2/7Ce2VcVRk568iSvniGWcUXIy7wEDR1wzolcxcriFVrWYcwBg==",
+-      "cpu": [
+-        "arm64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "android"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/android-x64": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/android-x64/-/android-x64-0.28.1.tgz",
+-      "integrity": "sha512-dbwY7ltSMDWsRatcRpCnES4F+im88OCUgGZjy52shC7GqHRE/cYlxNbB4Z4UpJswpcc4Qxd2oE/ufM0p61IKng==",
+-      "cpu": [
+-        "x64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "android"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/darwin-arm64": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/darwin-arm64/-/darwin-arm64-0.28.1.tgz",
+-      "integrity": "sha512-TZbWkQY7kvTAXbXUT7uVACR5cMHsDiSz9z7ZKAX/RTq/WJEk3QyRr0wZpNhBDX+/0CtdqUIJlOiodQcta6tY3Q==",
+-      "cpu": [
+-        "arm64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "darwin"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/darwin-x64": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/darwin-x64/-/darwin-x64-0.28.1.tgz",
+-      "integrity": "sha512-zfdzgK9ACBNZLI/CyHTOx81SyNbM6YXn7rxSgX97VjyiPl9W1i4Ka4fgKECEoFCKGpvBj5qArWIGgQjOwkgskQ==",
+-      "cpu": [
+-        "x64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "darwin"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/freebsd-arm64": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/freebsd-arm64/-/freebsd-arm64-0.28.1.tgz",
+-      "integrity": "sha512-wG2EA8ENdEI0qhkSZMjfqrdY+ziCYCPMmtZjjIwOmXFjmyzEHn+UUxk5of+SYsjtfs3VpnlC7QLzSI5hY/rOAw==",
+-      "cpu": [
+-        "arm64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "freebsd"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/freebsd-x64": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/freebsd-x64/-/freebsd-x64-0.28.1.tgz",
+-      "integrity": "sha512-i7dZ9vQgnvSCzi/rYCXNgtF/U+eKZNJBzu3eTQbRgHnM7tNSizLOkRFAl3qzVc/Op/u5YkHHa4pf/3DOYHthLQ==",
+-      "cpu": [
+-        "x64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "freebsd"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/linux-arm": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/linux-arm/-/linux-arm-0.28.1.tgz",
+-      "integrity": "sha512-qVXBOHQS+d5Y722GwJzJUtOLlX7km3CraOaGormF1pDtPd2C/l1SHRPgjLunLGe51Sh5YYWKMFDyV4SxgMQYTQ==",
+-      "cpu": [
+-        "arm"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "linux"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/linux-arm64": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/linux-arm64/-/linux-arm64-0.28.1.tgz",
+-      "integrity": "sha512-yHs+0uc8+nvEAfAfxrWQKK5peSNzBc4PegcMO0EJ2hT71uA7vB8Ihg2e77R2P7SG5uYjPbHlLLmve4LLLRCf0g==",
+-      "cpu": [
+-        "arm64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "linux"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/linux-ia32": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/linux-ia32/-/linux-ia32-0.28.1.tgz",
+-      "integrity": "sha512-d1z4ZuP0ajrfz/FhGT4vv278rX8KnPPJx8i5+AtK7TYbx9Le9F1hyzurZpkEyjkGa9dUGhQow4C1NmeGvqxN2w==",
+-      "cpu": [
+-        "ia32"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "linux"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/linux-loong64": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/linux-loong64/-/linux-loong64-0.28.1.tgz",
+-      "integrity": "sha512-M5sRjUVZrkm1OAPR3dlOYzNmN+loZKGVi1VUQGrwuqLcbR6qeAz+famMhjASeH3YVKvZz+zT1jlh/keC3Rj/lg==",
+-      "cpu": [
+-        "loong64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "linux"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/linux-mips64el": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/linux-mips64el/-/linux-mips64el-0.28.1.tgz",
+-      "integrity": "sha512-mRObBZeHh2OxcBFPWE/FjylkRgZdYuiTR3vaTozquCGOH14iP9oN4x4Ge81CoIDYQrXmIxpFumJBu5MtZpnQJQ==",
+-      "cpu": [
+-        "mips64el"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "linux"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/linux-ppc64": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/linux-ppc64/-/linux-ppc64-0.28.1.tgz",
+-      "integrity": "sha512-slScBsMAb3GFDcdrCgLwZtPYRoH2H/youv10QiZyRjmsP48fznoveWytSgCI/R0ZcUgpc0ZhIUEx6LHts8yrfQ==",
+-      "cpu": [
+-        "ppc64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "linux"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/linux-riscv64": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/linux-riscv64/-/linux-riscv64-0.28.1.tgz",
+-      "integrity": "sha512-kw0owk1o0GFETUJyW0jc0G4Yzs0BHZn0JDZ8JRT088vjJYX777BAs1fDGxAC+q831qOs2DTC96mNsG2opdfyyQ==",
+-      "cpu": [
+-        "riscv64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "linux"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/linux-s390x": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/linux-s390x/-/linux-s390x-0.28.1.tgz",
+-      "integrity": "sha512-/lAIjX8aYFRByhh6L5rYtPEDRqa9de/4V/juOXcta5frjvzXO4/sqEtyytse0g3zZFuWu5cDN0MkLz2qRDD2Ag==",
+-      "cpu": [
+-        "s390x"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "linux"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/linux-x64": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-0.28.1.tgz",
+-      "integrity": "sha512-u/anNYF2mmVOEDwLtnQ1wOr3EZ9sTNGLWrsYGYwHWzGA3Si84IOkHXlbWTD1NB+9/1lcnweYKO54uhxZydNzfA==",
+-      "cpu": [
+-        "x64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "linux"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/netbsd-arm64": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/netbsd-arm64/-/netbsd-arm64-0.28.1.tgz",
+-      "integrity": "sha512-oks0DYbLwWMmaakTsCb+zL4E+aHRVLom9IJZOAthMQEPiQmydXHkziYEsGYRx0uNV/IjEKGAV941JzH02pflqw==",
+-      "cpu": [
+-        "arm64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "netbsd"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/netbsd-x64": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/netbsd-x64/-/netbsd-x64-0.28.1.tgz",
+-      "integrity": "sha512-aeL6lAnN89Hz43Mlh1G8ARasbuoYvSITDEx0tHh5b7jJnHcssqgjy9Yx430GDpmCa6OyrKoS0aNRjKundRizGg==",
+-      "cpu": [
+-        "x64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "netbsd"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/openbsd-arm64": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/openbsd-arm64/-/openbsd-arm64-0.28.1.tgz",
+-      "integrity": "sha512-MEFJe5C3R8pwXdZ5Y21oo6m7ePiS0d9pWucn99O/wvyJZChoIQKrQDxKrGeW8F5+T0okTHesAmDeiHDTIq0V/Q==",
+-      "cpu": [
+-        "arm64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "openbsd"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/openbsd-x64": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/openbsd-x64/-/openbsd-x64-0.28.1.tgz",
+-      "integrity": "sha512-i/ZLIOafE0Z8cI/XANJAixoJL/uRAoS2xOA3rb0xN+KK0K177cMAsQYkzHtBrtMXAKuAc7HGgcWiZ/sRC1Nxgw==",
+-      "cpu": [
+-        "x64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "openbsd"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/openharmony-arm64": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/openharmony-arm64/-/openharmony-arm64-0.28.1.tgz",
+-      "integrity": "sha512-ge+Z7EXFNt2BO1oAMsVpiQ8EwndV9i1xXerAeTIK7AtPs3bKFXQM7nlRxDSIUIMeueR1CNXxqztLzdNeReKBJg==",
+-      "cpu": [
+-        "arm64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "openharmony"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/sunos-x64": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/sunos-x64/-/sunos-x64-0.28.1.tgz",
+-      "integrity": "sha512-BEjgtECkL3vY+SaSQ6nzVfiALUeFxpawyp8Jmf5PtYhf1Ug40N1h/hxlhts+f1FvSvarEigdxS3BlSMI2PJLcQ==",
+-      "cpu": [
+-        "x64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "sunos"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/win32-arm64": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/win32-arm64/-/win32-arm64-0.28.1.tgz",
+-      "integrity": "sha512-lCv9eK/H6ZJWbE7bh2nw54CZ9M2nupBxJcTsdk/QQnWkdSjKGuxmmH8/GWrlT1eMmZfn4dGcCjRte397WqfQXA==",
+-      "cpu": [
+-        "arm64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "win32"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/win32-ia32": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/win32-ia32/-/win32-ia32-0.28.1.tgz",
+-      "integrity": "sha512-zvb/mB2bSCoJOpoCBgYKKpX6YM6mJBlBUVUtVj41DlZJVEB6/0CKlRYxP5wWl1C1ILiCoAU5wZZ4q1P3qeS6Eg==",
+-      "cpu": [
+-        "ia32"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "win32"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+-    "node_modules/vitest/node_modules/@esbuild/win32-x64": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/@esbuild/win32-x64/-/win32-x64-0.28.1.tgz",
+-      "integrity": "sha512-bm4Mowrv+GXMlpWX++EcXw/iLyd1o3+bJkC2DkWXYVvgZCqD/bSj9ctZeAMC3cIxgjRVR2Dufaiu4YPxr5gW1A==",
+-      "cpu": [
+-        "x64"
+-      ],
+-      "dev": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "os": [
+-        "win32"
+-      ],
+-      "peer": true,
+-      "engines": {
+-        "node": ">=18"
+-      }
+-    },
+     "node_modules/vitest/node_modules/@vitest/mocker": {
+       "version": "4.1.9",
+       "resolved": "https://registry.npmjs.org/@vitest/mocker/-/mocker-4.1.9.tgz",
+@@ -9568,50 +9099,6 @@
+         }
+       }
+     },
+-    "node_modules/vitest/node_modules/esbuild": {
+-      "version": "0.28.1",
+-      "resolved": "https://registry.npmjs.org/esbuild/-/esbuild-0.28.1.tgz",
+-      "integrity": "sha512-HrJrvZv5ayxBzPfwphOoNzkzOIIlifzk0KJrGK2c8R4+LKpMtpYLQeUdjnwjWv/LZlkH2laZk+4w78pi99D4Vw==",
+-      "dev": true,
+-      "hasInstallScript": true,
+-      "license": "MIT",
+-      "optional": true,
+-      "peer": true,
+-      "bin": {
+-        "esbuild": "bin/esbuild"
+-      },
+-      "engines": {
+-        "node": ">=18"
+-      },
+-      "optionalDependencies": {
+-        "@esbuild/aix-ppc64": "0.28.1",
+-        "@esbuild/android-arm": "0.28.1",
+-        "@esbuild/android-arm64": "0.28.1",
+-        "@esbuild/android-x64": "0.28.1",
+-        "@esbuild/darwin-arm64": "0.28.1",
+-        "@esbuild/darwin-x64": "0.28.1",
+-        "@esbuild/freebsd-arm64": "0.28.1",
+-        "@esbuild/freebsd-x64": "0.28.1",
+-        "@esbuild/linux-arm": "0.28.1",
+-        "@esbuild/linux-arm64": "0.28.1",
+-        "@esbuild/linux-ia32": "0.28.1",
+-        "@esbuild/linux-loong64": "0.28.1",
+-        "@esbuild/linux-mips64el": "0.28.1",
+-        "@esbuild/linux-ppc64": "0.28.1",
+-        "@esbuild/linux-riscv64": "0.28.1",
+-        "@esbuild/linux-s390x": "0.28.1",
+-        "@esbuild/linux-x64": "0.28.1",
+-        "@esbuild/netbsd-arm64": "0.28.1",
+-        "@esbuild/netbsd-x64": "0.28.1",
+-        "@esbuild/openbsd-arm64": "0.28.1",
+-        "@esbuild/openbsd-x64": "0.28.1",
+-        "@esbuild/openharmony-arm64": "0.28.1",
+-        "@esbuild/sunos-x64": "0.28.1",
+-        "@esbuild/win32-arm64": "0.28.1",
+-        "@esbuild/win32-ia32": "0.28.1",
+-        "@esbuild/win32-x64": "0.28.1"
+-      }
+-    },
+     "node_modules/vitest/node_modules/picomatch": {
+       "version": "4.0.4",
+       "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.4.tgz",
