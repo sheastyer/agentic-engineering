@@ -216,19 +216,27 @@ text input → listener decoded the `plain_text_input` payload, `parse_dollars` 
 scaled to 420) and the workflow ceiling lifted. **But the run then exposed a gap:** the
 funded budget scaled dollars and turns, NOT the flat 20-min
 `CODING_ACTIVITY_TIMEOUT_MINUTES` — `implement_stories` hit StartToClose at 20:00 on
-attempt 1 and the Temporal retry (max 4) silently discarded the whole paid pass (and,
-with no heartbeat, the worker kept the timed-out attempt's SDK session running alongside
-attempt 2 — double subscription burn). Run terminated by hand mid-attempt-2. **Fix (same
-day): `_coding_timeout(plan)` in `engineering_pod.py`** — the coding passes' StartToClose
+attempt 1 and the Temporal retry (max 4) silently discarded the whole paid pass. Run
+terminated by hand mid-attempt-2. Post-mortem from the SDK transcripts + surviving
+workspace (this also corrects an earlier read that the timed-out session kept running
+alongside its retry — it did not; attempt 1's transcript stops at the timeout and its
+workspace was torn down, so cancellation was delivered cleanly): **orchestrator mode
+worked exactly as designed on both attempts.** Attempt 1's lead dispatched `researcher`
+(read-only scout) then S1→S5 implementers strictly serially on the architect's tiers
+(S1/S3/S5 → `implementer_heavy`, S2/S4 → `implementer`), ~2 min cadence, and dispatched
+the FINAL story 42 s before the cutoff — it was ~3 min short of finishing the feature.
+Attempt 2 re-did S1–S4 from a fresh clone with per-story checkpoint commits
+(`story <id>: <title>`, exactly the prompt's contract) and was mid-S5 at termination.
+So the single-writer serialization, tier routing, and checkpoint discipline are all
+**live-validated**; what failed was only the wall-clock cap. **Fix (same day):
+`_coding_timeout(plan)` in `engineering_pod.py`** — the coding passes' StartToClose
 scales with `coding_budget_usd / CODING_MAX_BUDGET_USD` ($15 → 120 min), capped at
 `CODING_ACTIVITY_TIMEOUT_MAX_MINUTES` (240); unfunded plans keep the flat default so old
 histories replay unchanged. The rule is now: **a funded budget scales all three caps —
-dollars, turns, wall-clock.** Follow-up worth doing before the next heavy run: heartbeat
-the coding activities so a timed-out attempt's SDK session is actually cancelled instead
-of running to completion in parallel with its retry. Also added `cli.run --body` (the
-feedback body was hardcoded demo text; the PM brief and the pod need the real report).
-Still pending: a full multi-story live run to the PR (orchestrator dispatch validated
-only up to launch; the run was cut at the timeout).
+dollars, turns, wall-clock.** Also added `cli.run --body` (the feedback body was
+hardcoded demo text; the PM brief and the pod need the real report). Still pending: a
+full multi-story live run to the PR (the run was cut at the timeout one story from a
+complete diff).
 
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`
