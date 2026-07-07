@@ -188,6 +188,10 @@ class BugWorkflow:
             self._ceiling = max(self._ceiling, self._cost_usd + plan.coding_budget_usd)
 
         self._enter("engineering_pod")
+        # Carry the run's thread anchor + title on the plan so the pod posts its coding
+        # play-by-play (stories in flight, QA, each review/CI pass, PR opened) into this thread.
+        plan.thread_ts = self._thread_ts
+        plan.title = self._title
         pod = await workflow.execute_child_workflow(
             EngineeringPodWorkflow.run,
             plan,

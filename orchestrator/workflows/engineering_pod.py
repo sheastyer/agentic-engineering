@@ -30,8 +30,8 @@ with workflow.unsafe.imports_passed_through():
         MAX_REVIEW_PASSES,
         PREVIEW_ACTIVITY_TIMEOUT_MINUTES,
     )
-    from orchestrator.shared.types import CIResult, PodResult, StoryPlan
-    from orchestrator.workflows.common import run_activity
+    from orchestrator.shared.types import CIResult, NoticeRow, PodResult, ProgressNotice, StoryPlan
+    from orchestrator.workflows.common import NOTIFY_TIMEOUT, clip, run_activity
 
 # Coding + PR-open activities run a real agent and the target's tests in a sandbox — give
 # them minutes, not the 30s reasoning default. Deterministic (a constant timedelta).
@@ -62,6 +62,15 @@ _PREVIEW_TIMEOUT = timedelta(minutes=PREVIEW_ACTIVITY_TIMEOUT_MINUTES)
 class EngineeringPodWorkflow:
     @workflow.run
     async def run(self, plan: StoryPlan) -> PodResult:
+        # The parent carries its Slack thread anchor on the plan (like coding_budget_usd) so the
+        # pod can post a play-by-play (coding in flight, QA, each review/CI pass, PR opened) into
+        # the SAME thread — the coding round is the long, opaque part of a run, and this makes it
+        # observable. No thread (Slack off / $0 dry-run) => _notify is a no-op, nothing changes.
+        # (Kept a single `plan` arg: extra run() params break Temporal's arg-type decoding for
+        # callers that pass only the plan — the payload then arrives as a raw dict.)
+        self._thread_ts = plan.thread_ts
+        self._title = plan.title
+
         # Costs accrue across the (possibly looping) stages, so accumulate as we go rather than
         # summing only the final result — a coding/review pass we later supersede still spent.
         cost = 0
@@ -77,19 +86,47 @@ class EngineeringPodWorkflow:
         # _coding_timeout) — a funded heavy run must not die at the default-cap timeout.
         coding_timeout = _coding_timeout(plan)
 
+        # Announce the stories going into the shared workspace — "what's in flight". (The pod
+        # implements them in one session, so this list is the finest-grained view the
+        # orchestration plane has; per-story detail lands in the coding summary below.)
+        await self._notify(
+            "coding",
+            [f"Implementing {_n(len(plan.stories), 'story', 'stories')} in one workspace…"],
+            rows=[
+                NoticeRow(s.id, f"{s.tier} · est {s.estimate}", clip(s.title))
+                for s in plan.stories
+            ],
+        )
+
         # One pod session implements the whole ordered story plan in a single workspace
         # (orchestrating per-story subagents itself when the plan has multiple stories).
         result = await run_activity(act.implement_stories, plan, timeout=coding_timeout)
         qa = await run_activity(act.qa_review, plan.project, [result])
         _spend(result, qa)
+        await self._notify(
+            "qa",
+            ["Initial coding pass complete."],
+            rows=[
+                NoticeRow("coding", result.status, clip(result.summary)),
+                NoticeRow("QA", "passed" if qa.passed else "failed", clip(qa.notes)),
+            ],
+        )
 
         # Bounded QA -> fix loop: re-run the implementation once if QA failed (§10 cap).
         fixes = 0
         while not qa.passed and fixes < MAX_QA_FIX_PASSES:
             fixes += 1
+            await self._notify(
+                "coding", [f"QA failed — re-coding (fix pass {fixes}/{MAX_QA_FIX_PASSES})."]
+            )
             result = await run_activity(act.implement_stories, plan, timeout=coding_timeout)
             qa = await run_activity(act.qa_review, plan.project, [result])
             _spend(result, qa)
+            await self._notify(
+                "qa",
+                [f"QA re-check (fix pass {fixes})."],
+                rows=[NoticeRow("QA", "passed" if qa.passed else "failed", clip(qa.notes))],
+            )
 
         # Bounded code-review -> revise loop, BEFORE the PR opens (§10 cap). A reasoning-plane
         # reviewer critiques the diff; if it requires changes, the developer (coding pod) revises
@@ -98,15 +135,32 @@ class EngineeringPodWorkflow:
         # PR that has already been through this loop.
         review = await run_activity(act.review_diff, plan, result)
         _spend(review)
+        await self._notify(
+            "code_review",
+            ["Reviewer critiqued the diff."],
+            rows=[self._review_row(review)],
+        )
         reviews = 0
         while not review.approved and reviews < MAX_REVIEW_PASSES:
             reviews += 1
+            await self._notify(
+                "code_review",
+                [f"Revising against review feedback (pass {reviews}/{MAX_REVIEW_PASSES})."],
+            )
             result = await run_activity(
                 act.revise_after_review, plan, result, review, timeout=coding_timeout
             )
             qa = await run_activity(act.qa_review, plan.project, [result])
             review = await run_activity(act.review_diff, plan, result)
             _spend(result, qa, review)
+            await self._notify(
+                "code_review",
+                [f"Re-review (pass {reviews})."],
+                rows=[
+                    NoticeRow("QA", "passed" if qa.passed else "failed", clip(qa.notes)),
+                    self._review_row(review),
+                ],
+            )
 
         # Open the PR from the agent's (reviewed) diff — the pod's terminal artifact. Deploy is
         # NOT here — it sits behind the parent's human approval gate (§9.2). The branch carries a
@@ -118,6 +172,10 @@ class EngineeringPodWorkflow:
             act.open_pr, plan.project, branch, [result], review.notes, timeout=_CODING_TIMEOUT
         )
         _spend(pr)
+        await self._notify(
+            "pr_opened",
+            [f"PR: {pr.url}" if pr.opened else f"PR not opened — {pr.note or 'no changes'}"],
+        )
 
         # If the PR never opened (e.g. the diff didn't apply against the remote base), there is
         # nothing to wait on or fix: await_ci would poll a non-existent PR until it times out
@@ -136,17 +194,25 @@ class EngineeringPodWorkflow:
             # coding run + a CI wait). CI "unavailable" (mock/local target) reports passed=True,
             # so $0 dry-runs skip this. If still red after the cap, ci.passed stays False and the
             # parent halts before merging (Status.CI_FAILED) — the org never merges past a red PR.
+            await self._notify("ci", ["Waiting for the PR's CI to conclude…"])
             ci = await run_activity(act.await_ci, plan.project, branch, pr.url, timeout=_CI_TIMEOUT)
             _spend(ci)
+            await self._notify("ci", [], rows=[self._ci_row(ci)])
             ci_passes = 0
             while not ci.passed and ci_passes < MAX_CI_FIX_PASSES:
                 ci_passes += 1
+                await self._notify(
+                    "ci", [f"CI red — pushing a fix (pass {ci_passes}/{MAX_CI_FIX_PASSES})."]
+                )
                 result = await run_activity(
                     act.revise_after_ci, plan, result, ci, timeout=coding_timeout
                 )
                 upd = await run_activity(act.update_pr, plan.project, branch, [result], timeout=_CODING_TIMEOUT)
                 ci = await run_activity(act.await_ci, plan.project, branch, pr.url, timeout=_CI_TIMEOUT)
                 _spend(result, upd, ci)
+                await self._notify(
+                    "ci", [f"CI re-check (fix pass {ci_passes})."], rows=[self._ci_row(ci)]
+                )
 
         # Post-QA visual evidence: screenshot the app with the FINAL diff applied (after
         # the CI fix loop, so the shots match exactly what the deploy gate would merge).
@@ -178,3 +244,41 @@ class EngineeringPodWorkflow:
             cost_tokens=cost,
             cost_usd=cost_usd,
         )
+
+    # --- Slack play-by-play (advisory, threaded onto the parent's run thread) -----------
+    async def _notify(self, stage: str, text: list[str], rows: list["NoticeRow"] | None = None) -> None:
+        """Post one pod step into the run's thread. A no-op without a thread anchor (Slack
+        off / dry-run). Advisory like the parent's notifier: a failed post degrades to a
+        silent skip — it must never block or fail a pod that's carrying paid-for coding."""
+        if not self._thread_ts:
+            return
+        notice = ProgressNotice(
+            workflow_id=workflow.info().workflow_id,
+            stage=stage,
+            title=self._title,
+            project="",
+            text=list(text),
+            rows=list(rows or []),
+            thread_ts=self._thread_ts,
+        )
+        try:
+            await run_activity(act.notify_progress, notice, timeout=NOTIFY_TIMEOUT)
+        except Exception:
+            pass  # visibility is advisory; never let a notification failure touch the pod
+
+    @staticmethod
+    def _review_row(review) -> "NoticeRow":
+        """The reviewer's verdict as a scannable row — approved, or the changes it wants."""
+        if review.approved:
+            return NoticeRow("review", "approved", clip(review.notes))
+        detail = clip("; ".join(review.required_changes) or review.notes)
+        return NoticeRow("review", "changes requested", detail)
+
+    @staticmethod
+    def _ci_row(ci) -> "NoticeRow":
+        return NoticeRow("CI", ci.status, clip(ci.failing_summary or ""))
+
+
+def _n(count: int, singular: str, plural: str) -> str:
+    """'1 story' / '3 stories' — pure formatting, deterministic."""
+    return f"{count} {singular if count == 1 else plural}"
