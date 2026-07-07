@@ -8,7 +8,50 @@ Pure functions over plain data: no Slack or Temporal imports, testable for $0.
 import json
 from dataclasses import dataclass
 
-from orchestrator.shared.types import GateNotice, ProgressNotice
+from orchestrator.shared.types import GateNotice, NoticeRow, ProgressNotice
+
+# A row's short status word -> a colored emoji, so a card reads at a glance (green = go,
+# red = stop, gray = inconclusive, yellow = partial). Matched on the first word of the
+# status, lowercased; an unmapped status just renders without an emoji.
+_STATUS_EMOJI = {
+    "approve": "🟢", "approved": "🟢", "pass": "🟢", "passed": "🟢", "ok": "🟢",
+    "complete": "🟢", "completed": "🟢", "done": "🟢", "shipped": "🟢", "yes": "🟢",
+    "reject": "🔴", "rejected": "🔴", "fail": "🔴", "failed": "🔴", "hold": "🔴",
+    "held": "🔴", "halt": "🔴", "blocked": "🔴", "error": "🔴", "no": "🔴",
+    "unresolved": "⚪", "skipped": "⚪", "skip": "⚪", "pending": "⚪", "n/a": "⚪",
+    "unavailable": "⚪", "none": "⚪",
+    "partial": "🟡", "warn": "🟡", "warning": "🟡", "revise": "🟡",
+}
+
+
+def _status_emoji(status: str) -> str:
+    first = status.strip().lower().split()
+    return _STATUS_EMOJI.get(first[0], "") if first else ""
+
+
+def render_rows(rows: list[NoticeRow]) -> str:
+    """Render enumerated notice rows as one scannable mrkdwn block: each row is a bold
+    label with a status emoji, and its detail is demoted into a blockquote underneath.
+    Beats a run-on paragraph — the human sees each vote / verdict / story as its own,
+    clearly delimited line instead of a wall of text."""
+    out: list[str] = []
+    for r in rows:
+        emoji = _status_emoji(r.status)
+        head = " ".join(p for p in (emoji, f"*{r.label}*") if p)
+        if r.status:
+            head += f"  {r.status}"
+        if r.detail:
+            head += f"\n> {r.detail}"
+        out.append(head)
+    return "\n\n".join(out)
+
+
+def row_line(row: NoticeRow) -> str:
+    """Flatten a row to one plain string for the queryable ``gate_context`` state (and
+    plain-text fallbacks) — the same ``label: status — detail`` shape the workflows used
+    before rows existed, so queries/audits keep reading the way they always did."""
+    parts = f"{row.label}: {row.status}" if row.status else row.label
+    return f"{parts} — {row.detail}" if row.detail else parts
 
 # gate -> [(label, decision, button style)]. A gate with no buttons is notify-only:
 # the clarification gate wants free text, which a button can't carry — the human
@@ -78,6 +121,17 @@ def _meta_footer(*parts: str) -> dict:
     }
 
 
+def _append_rows_section(blocks: list[dict], rows: list[NoticeRow]) -> None:
+    """Append the enumerated rows as their own mrkdwn section (kept separate from the
+    header so the divider between 'what this is' and 'the items' is visual, not just
+    textual). A no-op when there are no rows, so notify-only cards stay unchanged."""
+    if not rows:
+        return
+    blocks.append(
+        {"type": "section", "text": {"type": "mrkdwn", "text": render_rows(rows)[:3000]}}
+    )
+
+
 def render_progress_text(notice: ProgressNotice) -> str:
     """Plain one-liner for the `text` field (notification banners, screen readers) —
     the readable message is the blocks (build_progress_blocks)."""
@@ -106,6 +160,7 @@ def build_progress_blocks(notice: ProgressNotice) -> list[dict]:
             "text": {"type": "mrkdwn", "text": (head + (f"\n{body}" if body else ""))[:3000]},
         }
     ]
+    _append_rows_section(blocks, notice.rows)
     if not notice.thread_ts:
         blocks.append(_meta_footer(notice.project, f"`{notice.workflow_id}`"))
     return blocks
@@ -192,6 +247,7 @@ def build_blocks(notice: GateNotice) -> list[dict]:
             "text": {"type": "mrkdwn", "text": (head + (f"\n{body}" if body else ""))[:3000]},
         },
     ]
+    _append_rows_section(blocks, notice.rows)
     buttons = [
         {
             "type": "button",

@@ -18,6 +18,8 @@ from orchestrator.humanio.gates import (
     build_progress_blocks,
     fallback_text,
     render_progress_text,
+    render_rows,
+    row_line,
     signal_for,
 )
 from orchestrator.humanio.notify import notify_gate_with_client, notify_progress_with_client
@@ -28,7 +30,7 @@ from orchestrator.humanio.slack_listener import (
     parse_block_action,
     resolved_blocks,
 )
-from orchestrator.shared.types import GateNotice, ProgressNotice
+from orchestrator.shared.types import GateNotice, NoticeRow, ProgressNotice
 
 
 def _notice(gate: str = "deploy") -> GateNotice:
@@ -64,6 +66,49 @@ def test_build_blocks_carries_context_and_decodable_buttons():
 def test_clarification_gate_is_notify_only():
     blocks = build_blocks(_notice("clarification"))
     assert [b["type"] for b in blocks] == ["section", "context"]  # no buttons to forge
+
+
+# --- outbound: enumerated rows render as scannable lines, not a wall ----------------
+def test_render_rows_maps_status_to_emoji_and_quotes_detail():
+    text = render_rows(
+        [
+            NoticeRow("legal", "approve", "no privacy risk"),
+            NoticeRow("sales", "reject", "low priority"),
+            NoticeRow("QA", "passed"),
+        ]
+    )
+    # Each row: a colored status emoji + a bold label, detail demoted into a quote.
+    assert "🟢 *legal*  approve" in text
+    assert "> no privacy risk" in text
+    assert "🔴 *sales*  reject" in text
+    assert "🟢 *QA*  passed" in text  # no detail -> no quote line
+    assert "> low priority" in text
+
+
+def test_gate_rows_render_as_their_own_section_between_header_and_buttons():
+    notice = _notice("council")
+    notice.context = ["brief: add pantry staples"]
+    notice.rows = [NoticeRow("legal", "approve", "fine"), NoticeRow("sales", "reject", "meh")]
+    header, rows, actions, footer = build_blocks(notice)
+    assert "brief: add pantry staples" in header["text"]["text"]
+    assert rows["type"] == "section"
+    assert "*legal*" in rows["text"]["text"] and "*sales*" in rows["text"]["text"]
+    assert actions["type"] == "actions" and footer["type"] == "context"
+
+
+def test_progress_rows_render_below_the_header():
+    notice = _progress("stories", thread_ts="1111.2222")
+    notice.text = ["3 stories planned"]
+    notice.rows = [NoticeRow("S1", "sonnet · est 2", "Add pantry table")]
+    (header, rows) = build_progress_blocks(notice)
+    assert "3 stories planned" in header["text"]["text"]
+    assert "*S1*" in rows["text"]["text"] and "Add pantry table" in rows["text"]["text"]
+
+
+def test_row_line_flattens_to_the_legacy_query_shape():
+    assert row_line(NoticeRow("QA", "passed", "all green")) == "QA: passed — all green"
+    assert row_line(NoticeRow("PR", "local://pr/9")) == "PR: local://pr/9"
+    assert row_line(NoticeRow("summary", "", "a toggle")) == "summary — a toggle"
 
 
 def test_fallback_text_names_gate_and_workflow():

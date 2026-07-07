@@ -28,9 +28,11 @@ with workflow.unsafe.imports_passed_through():
         CLARIFICATION_TIMEOUT_DAYS,
         DEPLOY_TIMEOUT_DAYS,
     )
+    from orchestrator.humanio.gates import row_line
     from orchestrator.shared.types import (
         FeedbackEvent,
         GateNotice,
+        NoticeRow,
         ProgressNotice,
         Status,
         Story,
@@ -199,15 +201,11 @@ class BugWorkflow:
         # nothing was captured, the note says why (honest absence beats silence).
         await self._notify_progress(
             "engineering",
-            [
-                f"coding: {pod.story_result.status}"
-                + (f" ({pod.story_result.tier})" if pod.story_result.tier else ""),
-                f"PR: {pod.pr_url or pod.branch}",
-                f"QA {'passed' if pod.qa.passed else 'failed'}"
-                f" · review {'approved' if pod.review_approved else 'unresolved'}"
-                f" · CI {clip(pod.ci_notes) or 'n/a'}",
+            [f"PR: {pod.pr_url or pod.branch}"] + self._screenshot_lines(pod),
+            rows=[
+                NoticeRow("coding", pod.story_result.status, pod.story_result.tier or "")
             ]
-            + self._screenshot_lines(pod),
+            + self._pod_verdict_rows(pod),
             image_refs=list(pod.screenshots),
         )
 
@@ -232,18 +230,13 @@ class BugWorkflow:
         self._enter("deploy_approval")
         await self._notify_gate(
             "deploy",
-            [
-                f"PR: {pod.pr_url or pod.branch}",
-                f"QA: {'passed' if pod.qa.passed else 'failed'} — {clip(pod.qa.notes)}",
-                f"review: {'approved' if pod.review_approved else 'unresolved'}"
-                + (f" — {clip(pod.review_notes)}" if pod.review_notes else ""),
-                f"CI: {clip(pod.ci_notes) or 'n/a'}" + (f" ({pod.ci_url})" if pod.ci_url else ""),
-            ]
+            [f"PR: {pod.pr_url or pod.branch}"]
             + (
                 [f"screenshots: {len(pod.screenshots)} in thread (📸 engineering post)"]
                 if pod.screenshots
                 else []
             ),
+            rows=self._pod_verdict_rows(pod, detailed=True),
         )
         try:
             await workflow.wait_condition(
@@ -326,11 +319,18 @@ class BugWorkflow:
         self._log.append(f"budget override declined by {self._budget_approver}; halting")
         raise _BudgetHalt()
 
-    async def _notify_gate(self, gate: str, context: list[str]) -> None:
+    async def _notify_gate(
+        self, gate: str, context: list[str], rows: list["NoticeRow"] | None = None
+    ) -> None:
         """Tell the human-I/O channel this workflow is parked at a gate. Advisory: a
         notification failure must never block or kill the gate — the signal path and the
-        gate's timeout still work without it, so failures degrade to a log line."""
-        self._gate_context = list(context)
+        gate's timeout still work without it, so failures degrade to a log line.
+
+        ``context`` is header lines; ``rows`` are enumerated items (verdicts) the Slack
+        layer renders as scannable rows. The queryable ``gate_context`` keeps the flat
+        string shape it always had."""
+        rows = rows or []
+        self._gate_context = list(context) + [row_line(r) for r in rows]
         notice = GateNotice(
             workflow_id=workflow.info().workflow_id,
             gate=gate,
@@ -338,12 +338,37 @@ class BugWorkflow:
             project=self._project,
             cost_usd=round(self._cost_usd, 4),
             context=list(context),
+            rows=list(rows),
             thread_ts=self._thread_ts,
         )
         try:
             await run_activity(act.notify_gate, notice, timeout=NOTIFY_TIMEOUT)
         except Exception:
             self._log.append(f"gate notification failed ({gate}); gate still open on its timeout")
+
+    @staticmethod
+    def _pod_verdict_rows(pod, detailed: bool = False) -> list["NoticeRow"]:
+        """QA / review / CI as scannable verdict rows, shared by the engineering progress
+        post and the deploy gate card. ``detailed`` attaches the notes/URLs a human needs
+        to approve the deploy; the progress post stays terse. Pure formatting."""
+        ci_detail = ""
+        if detailed:
+            ci_detail = clip(pod.ci_notes) or ""
+            if pod.ci_url:
+                ci_detail = (ci_detail + " " if ci_detail else "") + pod.ci_url
+        return [
+            NoticeRow(
+                "QA",
+                "passed" if pod.qa.passed else "failed",
+                clip(pod.qa.notes) if detailed else "",
+            ),
+            NoticeRow(
+                "review",
+                "approved" if pod.review_approved else "unresolved",
+                clip(pod.review_notes) if detailed and pod.review_notes else "",
+            ),
+            NoticeRow("CI", "passed" if pod.ci_passed else "failed", ci_detail),
+        ]
 
     @staticmethod
     def _screenshot_lines(pod) -> list[str]:
@@ -360,19 +385,22 @@ class BugWorkflow:
         self,
         stage: str,
         text: list[str],
+        rows: list["NoticeRow"] | None = None,
         document_title: str = "",
         document_md: str = "",
         image_refs: list[str] | None = None,
     ) -> None:
         """Post a stage update into the run's Slack thread (advisory, like _notify_gate).
         The first post anchors the thread: its returned ts is stored (deterministically —
-        activity results are part of history) and threaded onto every later notice."""
+        activity results are part of history) and threaded onto every later notice.
+        ``rows`` are enumerated items rendered as scannable rows below ``text``."""
         notice = ProgressNotice(
             workflow_id=workflow.info().workflow_id,
             stage=stage,
             title=self._title,
             project=self._project,
             text=list(text),
+            rows=list(rows or []),
             document_title=document_title,
             document_md=document_md,
             image_refs=list(image_refs or []),
