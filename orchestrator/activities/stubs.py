@@ -104,7 +104,52 @@ async def pm_revise_prd(prd: PRD, review: ArchitectReview) -> PRD:
 
 @activity.defn
 async def ux_generate_mocks(prd: PRD) -> Mocks:
-    return Mocks(present=True, ref=f"artifact://mocks/{prd.feature_id}", cost_tokens=200)
+    return Mocks(
+        present=True,
+        ref=f"mocks/{prd.feature_id}",
+        content=_mocks_md(prd),
+        cost_tokens=200,
+    )
+
+
+def _mocks_md(prd: PRD) -> str:
+    """Build the mock document as markdown — a low-fidelity textual wireframe derived from
+    the PRD. Rendered to a PDF and uploaded into the run's thread (the old ``artifact://``
+    ref was a dead link in Slack). Deterministic; a live UX persona would replace the prose
+    with real mocks, filling the same ``Mocks.content`` field."""
+    return "\n".join(
+        [
+            f"# UX mocks — {prd.feature_id}",
+            "",
+            "_Low-fidelity textual wireframes. (Stub output — a live UX agent would attach"
+            " visual mocks here, populating the same field.)_",
+            "",
+            "## Entry point",
+            "The feature is reached from the existing primary navigation; a new affordance"
+            " (button/section) is added without displacing current actions.",
+            "",
+            "## Screen — main view",
+            "- **Header:** screen title + a one-line description of the feature.",
+            "- **Body:** the primary control(s) the PRD calls for, laid out in a single"
+            " scannable column; empty, loading, and populated states are all shown.",
+            "- **Footer / actions:** confirm / cancel, with the confirm disabled until the"
+            " form is valid.",
+            "",
+            "## States",
+            "- **Empty:** a short prompt explaining what to add and why.",
+            "- **Populated:** the entered data rendered back for review, each row editable/removable.",
+            "- **Error:** inline validation next to the offending field, non-blocking.",
+            "",
+            "## Notes for engineering",
+            "- Reuse existing components and spacing tokens; no new design primitives.",
+            "- Mobile: the single-column layout collapses cleanly; controls stay reachable.",
+            "",
+            "---",
+            "_Derived from PRD:_",
+            "",
+            (prd.content or "(no PRD content)").strip(),
+        ]
+    )
 
 
 @activity.defn

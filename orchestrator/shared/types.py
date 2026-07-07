@@ -103,7 +103,10 @@ class ArchitectReview:
 @dataclass
 class Mocks:
     present: bool
-    ref: str                    # pointer into the artifact store (lightweight return)
+    ref: str                    # pointer/label for the mock set (kept for the audit trail)
+    content: str = ""           # markdown source of the mock document — rendered to a PDF and
+                                # uploaded into the run's Slack thread, like the PRD/research docs
+                                # (the ``ref`` alone was a dead ``artifact://`` link in Slack)
     cost_tokens: int = 0
     cost_usd: float = 0.0
 

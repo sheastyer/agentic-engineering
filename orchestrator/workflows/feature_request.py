@@ -215,10 +215,21 @@ class FeatureRequestWorkflow:
             # 4. Conditional UX mocks
             if brief.ui_impacting:
                 mocks = await self._act(act.ux_generate_mocks, prd, stage="ux_generate_mocks")
-                await self._notify_progress(
-                    "mocks",
-                    [f"mocks: {mocks.ref}" if mocks.present else "no mocks produced"],
-                )
+                # Attach the mocks as a PDF into the thread (like the PRD/research docs); the
+                # bare artifact ref was a dead link in Slack. Fall back to a plain note if the
+                # mock set carries no renderable content.
+                if mocks.present and mocks.content:
+                    await self._notify_progress(
+                        "mocks",
+                        ["UX mocks attached below."],
+                        document_title=f"UX mocks — {self._title}",
+                        document_md=mocks.content,
+                    )
+                else:
+                    await self._notify_progress(
+                        "mocks",
+                        ["mocks produced" if mocks.present else "no mocks produced"],
+                    )
 
             # 5. Consumer research (child, fan-out)
             self._enter("consumer_research")
