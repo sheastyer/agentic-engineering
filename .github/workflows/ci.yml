@@ -1,0 +1,35 @@
+name: CI
+
+# Run the test suite on every PR (and on pushes to main for a post-merge signal).
+# Executes on the homelab self-hosted CI runner (LXC 111 / 192.168.1.61), labelled
+# `self-hosted,ci` — registered per-repo from the homelab repo's
+# ansible/playbooks/github-ci-runners.yml.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A newer push to the same PR cancels the in-flight run so the runner isn't tied up.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: [self-hosted, ci]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create venv and install (dev extras)
+        run: |
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Run tests
+        run: |
+          . .venv/bin/activate
+          # Docker-backed tests self-skip when no daemon is reachable; the CI host
+          # has Docker, so the sandbox-isolation gate is exercised here.
+          pytest -q
