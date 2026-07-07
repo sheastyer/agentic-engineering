@@ -19,7 +19,9 @@ and tell the user.
   target. Real cost (~$2/feature, ~$1.5–2.5/bug — bugs ride the same engineering pod) and a
   real outward side-effect. **Both paths (feature and `--bug`) open + merge a PR.**
 - The skill **manages infra itself** (Temporal dev server + worker), starting them if down.
-- `cli.run` auto-plays every human gate (council, budget, sign-off, deploy) — a steel-thread run.
+- Gate handling depends on the driver's env: with `ORG_SLACK` set (sourced from `.env`, Step 2)
+  `cli.run` watches only and real humans approve via Slack; without it, it auto-plays every
+  human gate (council, budget, sign-off, deploy) — a steel-thread run.
 
 Other modes the user may ask for:
 - **Cheap** ("dry run", "no PR", "cheap"): live reasoning, **mock coding**, no PR
@@ -92,11 +94,19 @@ calls. The repo venv is `./.venv`; Python 3.14.
 ## Step 2 — Drive the run and babysit
 
 Start the driver in the background, capturing output; it prints `▶ started <workflow-id> …`
-then streams each stage and auto-approves gates until a terminal state:
+then streams each stage until a terminal state:
 ```bash
+set -a; . ./.env; set +a
 ./.venv/bin/python -u -m cli.run --project <project> [--bug] --title "<title>" \
   > .localdata/run.log 2>&1
 ```
+**Sourcing `.env` here is load-bearing, not just for the worker:** `cli.run` decides gate
+handling from *its own* environment — with `ORG_SLACK` set it watches only and real humans
+approve via the Slack buttons; without it the driver auto-plays **every** gate as
+`cli-human` (council, sign-off, budget override, **and deploy — which merges the product
+PR**), racing any Slack buttons the worker posted (observed 2026-07-07, run
+`feedback-demo-748f94bb`). For a deliberate steel-thread auto-run with Slack configured,
+pass `--auto-gates` explicitly instead of relying on a missing env var.
 **Capture the `<workflow-id>`** from the first line — Step 3 needs it.
 
 While it runs (a full coding run can take ~10–15 min), **babysit both logs** (`.localdata/run.log`
