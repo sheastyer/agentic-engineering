@@ -196,6 +196,14 @@ Ordered stages (the HTML diagram is the canonical version once it exists):
 5. `ConsumerResearchWorkflow` (child, parallel fan-out across demographic personas)
 6. **PM sign-off** (signal); `revise` loops back into PRD revision
 7. `architect_plan_stories`
+7a. **Coding-budget gate** (signal): the org estimates the coding round's cost
+    (deterministic per-story-tier heuristics, `shared/estimates.py`) and a human funds it
+    in Slack — accept the estimate, enter a custom dollar budget (text input), or halt.
+    The approved amount replaces `CODING_MAX_BUDGET_USD` for the run (the turn cap scales
+    with it) and lifts the workflow ceiling so the sanctioned round can't re-trip the
+    over-budget gate. Live coding only: the `estimate_coding_budget` stub returns
+    `gate=False`, so $0 dry-runs never park here. Timeout funds the estimate (bounded
+    spend, no stranded run); reject halts as `HELD`.
 8. `EngineeringPodWorkflow` (child, orchestrator-worker; one Agent-SDK coding pass over
    the ordered stories — for multi-story plans the pass itself is **orchestrated**: a lead
    session dispatches per-story implementer subagents serially in one shared workspace,
@@ -213,9 +221,10 @@ Ordered stages (the HTML diagram is the canonical version once it exists):
 
 ### BugWorkflow (shorter)
 Triage → dedupe → (optional user-clarification signal w/ 7-day timeout) → PM
-prioritize → **EngineeringPodWorkflow** (child — the bug as a one-story plan, so the
-same pod machinery applies: code → review loop → QA → PR → CI gate) → QA/CI gates →
-gated deploy. One pod, two entry points; there is no bespoke bug-fix path.
+prioritize → coding-budget gate (same as stage 7a above) → **EngineeringPodWorkflow**
+(child — the bug as a one-story plan, so the same pod machinery applies: code → review
+loop → QA → PR → CI gate) → QA/CI gates → gated deploy. One pod, two entry points;
+there is no bespoke bug-fix path.
 
 ---
 
@@ -225,7 +234,8 @@ gated deploy. One pod, two entry points; there is no bespoke bug-fix path.
 - **Debate + judge** — the exec council (agents + human voter, deterministic tally).
 - **Orchestrator-worker** — the engineering pod.
 - **Parallel fan-out** — the consumer-research panel.
-- **Human-in-the-loop gates** — council, PM sign-off, deploy, user clarification.
+- **Human-in-the-loop gates** — council, PM sign-off, coding budget, deploy, user
+  clarification.
 
 ---
 
@@ -267,6 +277,12 @@ These are non-negotiable. If a task seems to require breaking one, stop and ask.
   ceiling against that product.
 - **Per-workflow budget cap.** Each activity returns its cost; the workflow accumulates
   it (in dollars) and trips into a human gate when the ceiling is hit.
+- **Fund coding up front, don't die mid-run.** Before a live coding round, the
+  coding-budget gate (§7, stage 7a) shows the human a per-story-tier estimate
+  (`CODING_EST_*` in config) and the approved amount becomes that run's pod cap — so a
+  heavy lift gets funded once at the gate instead of soft-stopping halfway at the default
+  `CODING_MAX_BUDGET_USD`. The over-budget override gate stays as the backstop for revise
+  loops that draw the funded cap again.
 - **Lightweight returns.** Subagents persist detail to shared storage and return
   references; never re-ingest large payloads through the parent.
 - **The engineering pod dominates a feature's cost — cap it hard.** It runs the Agent SDK on

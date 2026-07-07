@@ -16,6 +16,8 @@ Billing: `build_coding_agent()` defaults to the Claude **subscription** via the 
 `build_sandbox()` contains the untrusted test command (CODING_SANDBOX=container for real input).
 """
 
+import math
+
 from temporalio import activity
 
 from orchestrator.agents.coding.agent import CodingAgent
@@ -33,8 +35,10 @@ from orchestrator.shared.config import (
     CODING_MAX_BUDGET_USD,
     CODING_MAX_TURNS,
 )
+from orchestrator.shared.estimates import estimate_coding_run
 from orchestrator.shared.types import (
     CIResult,
+    CodingEstimate,
     DeployResult,
     PRResult,
     ReviewResult,
@@ -101,14 +105,23 @@ def _coding_task(
     profile: ProjectProfile,
     tier: str = "sonnet",
     stories: list[CodingStory] | None = None,
+    budget_usd: float = 0.0,
 ) -> CodingTask:
+    # `budget_usd` is the human-funded amount from the pre-pod coding-budget gate
+    # (StoryPlan.coding_budget_usd); 0 keeps the default CODING_* caps. When the funded
+    # budget exceeds the default, the turn cap scales with it — both caps must rise
+    # together for a bigger budget to matter ("high enough to finish", config.py).
+    budget = budget_usd if budget_usd > 0 else CODING_MAX_BUDGET_USD
+    turns = CODING_MAX_TURNS
+    if budget > CODING_MAX_BUDGET_USD:
+        turns = math.ceil(CODING_MAX_TURNS * budget / CODING_MAX_BUDGET_USD)
     return CodingTask(
         instruction=instruction,
         test_command=profile.stack.test_command,
         conventions=profile.conventions,
         tier=tier,                             # model-selection phase: complex work -> opus, else sonnet
-        max_turns=CODING_MAX_TURNS,            # cost cap (subscription) — see config
-        max_budget_usd=CODING_MAX_BUDGET_USD,  # hard per-attempt spend ceiling
+        max_turns=turns,                       # cost cap (subscription) — see config
+        max_budget_usd=budget,                 # hard per-attempt spend ceiling
         run_tests=profile.stack.sandbox_tests, # honest QA: don't run a suite the sandbox can't
         stories=stories or [],                 # multi-story -> the SDK agent orchestrates (one
                                                # writer at a time, per-story tiers); empty -> single session
@@ -139,13 +152,15 @@ async def _run_coding(
     sandbox: Sandbox | None,
     tier: str = "sonnet",
     stories: list[CodingStory] | None = None,
+    budget_usd: float = 0.0,
 ) -> StoryResult:
     """One coding attempt — one pod session, one disposable workspace — adapted to a
     StoryResult. Shared by the feature pod (whole plan), the single-story path, and the bug
     path. `tier` is the heaviest model the run may draw on (recorded on the result so the
     trace shows it); `stories` carries the per-story dispatch plan that turns the SDK agent
-    into an orchestrator for multi-story plans (single writer at a time, per-story tiers)."""
-    task = _coding_task(instruction, profile, tier, stories)
+    into an orchestrator for multi-story plans (single writer at a time, per-story tiers);
+    `budget_usd` is the human-funded coding budget from the pre-pod gate (0 = default caps)."""
+    task = _coding_task(instruction, profile, tier, stories, budget_usd)
     source, from_git = _source_and_fromgit(profile)
     outcome, qa = await implement_and_verify(
         agent, task, source, from_git=from_git, sandbox=sandbox
@@ -195,6 +210,7 @@ async def implement_plan_with_pod(
     return await _run_coding(
         agent, _plan_instruction(plan), plan.feature_id, profile, sandbox,
         tier=_plan_tier(plan), stories=_plan_stories(plan),
+        budget_usd=plan.coding_budget_usd,
     )
 
 
@@ -214,6 +230,7 @@ async def revise_after_review_with_pod(
     return await _run_coding(
         agent, _revise_instruction(plan, review), plan.feature_id, profile, sandbox,
         tier=_plan_tier(plan), stories=_plan_stories(plan),
+        budget_usd=plan.coding_budget_usd,
     )
 
 
@@ -227,6 +244,16 @@ async def implement_story_with_pod(
     """One story in one workspace — the single-story path (used by tests / reusable). Runs on
     the story's own selected tier."""
     return await _run_coding(agent, story.title, story.id, profile, sandbox, tier=story.tier or "sonnet")
+
+
+@activity.defn(name="estimate_coding_budget")
+async def estimate_coding_budget_agent(plan: StoryPlan) -> CodingEstimate:
+    """Live twin of the estimate stub: same deterministic estimate, but gate=True — real
+    coding draws real money (the Claude subscription window), so the workflow parks at the
+    coding-budget gate and a human funds the round (accept the estimate, set a custom
+    budget, or halt) BEFORE the pod spends anything."""
+    usd, breakdown = estimate_coding_run(plan.stories)
+    return CodingEstimate(estimate_usd=usd, gate=True, breakdown=breakdown)
 
 
 @activity.defn(name="implement_stories")
@@ -287,6 +314,7 @@ async def revise_after_ci_with_pod(
     return await _run_coding(
         agent, _ci_fix_instruction(plan, ci), plan.feature_id, profile, sandbox,
         tier=_plan_tier(plan), stories=_plan_stories(plan),
+        budget_usd=plan.coding_budget_usd,
     )
 
 

@@ -43,7 +43,8 @@ with workflow.unsafe.imports_passed_through():
 
 
 class _BudgetHalt(Exception):
-    """Internal: the per-workflow budget gate was declined or timed out. Caught in run()."""
+    """Internal: a budget gate (over-budget override, or the pre-pod coding-budget gate)
+    was declined or timed out. Caught in run(); the message becomes the result summary."""
 
 
 @workflow.defn
@@ -65,6 +66,8 @@ class BugWorkflow:
         self._deploy_approver = "unknown"
         self._budget_decision: bool | None = None
         self._budget_approver = "unknown"
+        # Coding-budget gate inbox: (decision, budget_usd, approver) — see feature workflow.
+        self._coding_budget: tuple | None = None
 
     # `approver` defaults to "unknown" so the extension is additive (replay-safe for
     # histories signalled before identities existed; M5 SEC — approvals carry who approved).
@@ -82,6 +85,12 @@ class BugWorkflow:
         self._budget_decision = approve
         self._budget_approver = approver
 
+    @workflow.signal
+    def submit_coding_budget(
+        self, decision: str, budget_usd: float = 0.0, approver: str = "unknown"
+    ) -> None:
+        self._coding_budget = (decision, budget_usd, approver)
+
     @workflow.query
     def get_state(self) -> WorkflowState:
         return WorkflowState(
@@ -97,8 +106,10 @@ class BugWorkflow:
     async def run(self, event: FeedbackEvent) -> WorkflowResult:
         try:
             result = await self._execute(event)
-        except _BudgetHalt:
-            result = self._result(event, f"Halted at budget gate (${self._cost_usd:.4f}).")
+        except _BudgetHalt as halt:
+            result = self._result(
+                event, str(halt) or f"Halted at budget gate (${self._cost_usd:.4f})."
+            )
         # One terminal post covers every exit path (shipped/duplicate/held/over-budget/...).
         await self._notify_progress(
             "done",
@@ -166,6 +177,14 @@ class BugWorkflow:
             project=event.project,
             context=context,
         )
+        # Coding-budget gate (§9.4), same as the feature path: before the pod spends
+        # anything real, a human funds the round. The estimate stub returns gate=False,
+        # so $0 dry-runs never park here.
+        estimate = await run_activity(act.estimate_coding_budget, plan)
+        if estimate.gate:
+            plan.coding_budget_usd = await self._coding_budget_gate(estimate)
+            self._ceiling = max(self._ceiling, self._cost_usd + plan.coding_budget_usd)
+
         self._enter("engineering_pod")
         pod = await workflow.execute_child_workflow(
             EngineeringPodWorkflow.run,
@@ -238,6 +257,40 @@ class BugWorkflow:
         return self._result(event, f"Bug fix shipped ({pod.pr_url or pod.branch}).")
 
     # --- helpers ---------------------------------------------------------------
+    async def _coding_budget_gate(self, estimate) -> float:
+        """Park until a human funds the coding round (same contract as the feature
+        workflow's gate): approve the estimate, set a custom budget, or reject (halt as
+        HELD). Timeout -> fund the estimate, so an unanswered card doesn't strand a run
+        whose spend stays bounded by the org's own sizing."""
+        self._enter(f"coding_budget_gate (est ${estimate.estimate_usd:.2f})")
+        self._coding_budget = None
+        await self._notify_gate(
+            "coding_budget",
+            list(estimate.breakdown)
+            + ["Fund the estimate, or enter a custom budget in USD below."],
+        )
+        try:
+            await workflow.wait_condition(
+                lambda: self._coding_budget is not None,
+                timeout=timedelta(days=BUDGET_OVERRIDE_TIMEOUT_DAYS),
+            )
+        except asyncio.TimeoutError:
+            self._log.append(
+                f"coding budget gate timed out; funding the estimate (${estimate.estimate_usd:.2f})"
+            )
+            return estimate.estimate_usd
+        decision, amount, approver = self._coding_budget
+        if decision == "reject":
+            self._status = Status.HELD
+            self._log.append(f"coding budget declined by {approver}; halted before the pod")
+            raise _BudgetHalt("Coding budget declined; halted before the engineering pod.")
+        custom = decision == "custom" and amount > 0
+        budget = amount if custom else estimate.estimate_usd
+        self._log.append(
+            f"coding budget funded: {'custom' if custom else 'estimate'} ${budget:.2f} by {approver}"
+        )
+        return budget
+
     async def _check_budget(self) -> None:
         if self._budget_overridden or self._cost_usd <= self._ceiling:
             return

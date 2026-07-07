@@ -181,6 +181,34 @@ pins the serialization/no-push/read-only-researcher/tier-routing/plumbing guards
 Not yet live-validated: needs a multi-story feature run (`ORG_LIVE=1` + `USE_AGENT_CODING=1`
 + `CODING_AGENT=claude`) to confirm dispatch behavior and real tree cost.
 
+**Update (2026-07-07) — pre-pod coding-budget gate (fund the round up front):** live runs
+kept dying mid-coding at the default `CODING_MAX_BUDGET_USD`, so the pod's budget is now
+funded by a human **before** it runs instead of discovered as a soft-stop halfway. Both
+workflows, right before the `EngineeringPodWorkflow` child: a new `estimate_coding_budget`
+activity (stub/live twins, like `notify_gate`) returns a deterministic estimate
+(`shared/estimates.py`: `CODING_EST_BASE_USD` + per-story `CODING_EST_STORY_USD[tier]`,
+calibrated on the ~$1.87 dark-mode run; the worst-case revise-loop multiple is shown too).
+The **stub returns `gate=False`** so $0 dry-runs and the whole existing suite never park;
+the agent-backed twin (registered under `USE_AGENT_CODING=1`) returns `gate=True` and the
+workflow parks at the `coding_budget` gate. The Slack card (gate `coding_budget`, 💰) has
+**Fund estimate / Halt run** buttons *plus a `plain_text_input`* (dispatch_action on
+Enter) for a custom USD amount — the JSON envelope rides `block_id` for inputs (a button
+carries it in `value`); the listener decodes both, parses/bounds the dollars
+(`parse_dollars`, 0 < $ ≤ 500), and keeps the card's controls live on a bad parse so the
+human can retype. Decision semantics: approve → fund the estimate; custom → fund the typed
+amount; reject → halt as `HELD` before any coding spend; **timeout (7d) → fund the
+estimate** (the run was already human-approved upstream; bounded spend beats a stranded
+run). The funded amount rides `StoryPlan.coding_budget_usd` into all three coding passes,
+**replaces `CODING_MAX_BUDGET_USD`** for the run (`CODING_MAX_TURNS` scales
+proportionally — both caps must rise together to matter), and lifts the workflow ceiling
+to spend-so-far + budget so the sanctioned round can't re-trip the over-budget override
+gate (which stays as the backstop for revise loops that re-draw the cap). `cli.run`
+auto-funds the estimate at this gate like every other gate (unless `ORG_SLACK` watches).
+**190 tests green** (`test_coding_budget_gate.py`: 22 new — estimator math, dollar
+parsing, card blocks/input round-trip, listener payload decoding, signal mapping, and
+workflow fund/custom/reject/timeout paths at $0). Not yet live-validated in Slack proper
+(the input block renders on the next `ORG_SLACK=1` run).
+
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`
   & `EngineeringPod` children. All stages currently call **stub** activities

@@ -39,6 +39,16 @@ CODING_ACTIVITY_TIMEOUT_MINUTES = 20
 CODING_MAX_TURNS = 70
 CODING_MAX_BUDGET_USD = 2.50
 
+# Coding-cost estimator — feeds the pre-pod **coding-budget gate** (§9.4): before a live
+# coding round runs, the org shows the human this estimate and they fund it (or set their
+# own budget, or halt). The approved amount replaces CODING_MAX_BUDGET_USD for that run,
+# so a heavy lift can be funded up front instead of dying mid-run at the default cap.
+# Heuristics, deliberately coarse: base = lead-session/workspace overhead, per-story cost
+# by the tier the architect assigned. Calibrated against the one real datapoint (the
+# 2026-06 dark-mode feature: ~$1.87 ≈ base + one sonnet story); refine as live runs land.
+CODING_EST_BASE_USD = 0.75
+CODING_EST_STORY_USD = {"haiku": 0.50, "sonnet": 1.25, "opus": 2.50}
+
 # Default image for the container coding agent (Option A, D9 — `CODING_AGENT=claude_container`).
 # Must carry the `claude` CLI + the target stack's runtime; supply the real one per deployment via
 # CODING_AGENT_IMAGE. Plain constant (no env read) so workflows can import this module (R3).

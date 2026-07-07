@@ -152,6 +152,8 @@ class StoryPlan:
     complexity: str = ""        # architect's whole-feature scope read (small|medium|large); bounds story count
     context: str = ""           # extra background handed verbatim to the coding agent (e.g. the
                                 # bug report body on the bug path); untrusted text, quoted in the prompt
+    coding_budget_usd: float = 0.0  # human-funded budget for the coding round (set at the
+                                # pre-pod coding-budget gate); 0 = the default CODING_* caps
     cost_tokens: int = 0
     cost_usd: float = 0.0
 
@@ -167,6 +169,20 @@ class StoryResult:
                                 # "failed: …" | "unavailable: …" (tests can't run there — not a failure)
     tier: str = ""              # coding-model tier that actually ran this attempt (traced so the
                                 # audit shows which model tackled the work); "" for stub/non-agent
+    cost_tokens: int = 0
+    cost_usd: float = 0.0
+
+
+@dataclass
+class CodingEstimate:
+    """What a coding round is expected to cost — the input to the pre-pod coding-budget
+    gate. Produced by the `estimate_coding_budget` activity: the stub returns
+    ``gate=False`` (a $0 dry-run has nothing to fund, so the workflow never parks), the
+    agent-backed twin returns ``gate=True`` so a human funds real coding before it runs."""
+
+    estimate_usd: float
+    gate: bool                  # park at the coding-budget gate before the pod?
+    breakdown: list[str] = field(default_factory=list)  # human-readable lines for the gate card
     cost_tokens: int = 0
     cost_usd: float = 0.0
 
@@ -283,8 +299,8 @@ class GateNotice:
     holds) and handed to the ``notify_gate`` activity, whose live twin posts it to
     Slack with approve/reject buttons. ``gate`` is one of the names in
     ``orchestrator.humanio.gates`` ("council" | "pm_signoff" | "deploy" | "budget" |
-    "clarification"); ``context`` is gate-specific lines for the human (agent votes,
-    PR URL + QA/CI verdicts, ...)."""
+    "coding_budget" | "clarification"); ``context`` is gate-specific lines for the human
+    (agent votes, PR URL + QA/CI verdicts, a coding-cost estimate, ...)."""
 
     workflow_id: str
     gate: str

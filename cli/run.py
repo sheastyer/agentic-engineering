@@ -33,7 +33,7 @@ async def drive_feature(handle: WorkflowHandle, auto: bool = True) -> None:
     ``auto=False`` (the default when ORG_SLACK is set) watches without signalling — a
     real human approves via the Slack buttons, and auto-signalling would race them."""
     q = FeatureRequestWorkflow.get_state
-    done = {"council": False, "budget": False, "signoff": False, "deploy": False}
+    done = {"council": False, "budget": False, "coding_budget": False, "signoff": False, "deploy": False}
     seen = 0
     misses = 0
     while True:
@@ -66,6 +66,12 @@ async def drive_feature(handle: WorkflowHandle, auto: bool = True) -> None:
             )
             print(f"  ✓ budget override: APPROVE  ({stage})")
             done["budget"] = True
+        elif stage.startswith("coding_budget_gate") and not done["coding_budget"]:
+            await handle.signal(
+                FeatureRequestWorkflow.submit_coding_budget, args=["approve", 0.0, "cli-human"]
+            )
+            print(f"  ✓ coding budget: FUND ESTIMATE  ({stage})")
+            done["coding_budget"] = True
         elif stage == "pm_signoff" and not done["signoff"]:
             await handle.signal(
                 FeatureRequestWorkflow.submit_pm_signoff, args=["approve", "cli-human"]
@@ -86,7 +92,7 @@ async def drive_feature(handle: WorkflowHandle, auto: bool = True) -> None:
 
 async def drive_bug(handle: WorkflowHandle, auto: bool = True) -> None:
     q = BugWorkflow.get_state
-    done = {"deploy": False, "budget": False}
+    done = {"deploy": False, "budget": False, "coding_budget": False}
     seen = 0
     misses = 0
     while True:
@@ -116,6 +122,12 @@ async def drive_bug(handle: WorkflowHandle, auto: bool = True) -> None:
             await handle.signal(BugWorkflow.submit_budget_decision, args=[True, "cli-human"])
             print(f"  ✓ budget override: APPROVE  ({state.stage})")
             done["budget"] = True
+        elif state.stage.startswith("coding_budget_gate") and not done["coding_budget"]:
+            await handle.signal(
+                BugWorkflow.submit_coding_budget, args=["approve", 0.0, "cli-human"]
+            )
+            print(f"  ✓ coding budget: FUND ESTIMATE  ({state.stage})")
+            done["coding_budget"] = True
         if state.stage == "done":
             break
         await asyncio.sleep(1.0)
