@@ -22,7 +22,9 @@ with workflow.unsafe.imports_passed_through():
     from orchestrator.activities import stubs as act
     from orchestrator.shared.config import (
         CI_ACTIVITY_TIMEOUT_MINUTES,
+        CODING_ACTIVITY_TIMEOUT_MAX_MINUTES,
         CODING_ACTIVITY_TIMEOUT_MINUTES,
+        CODING_MAX_BUDGET_USD,
         MAX_CI_FIX_PASSES,
         MAX_QA_FIX_PASSES,
         MAX_REVIEW_PASSES,
@@ -33,6 +35,20 @@ with workflow.unsafe.imports_passed_through():
 # Coding + PR-open activities run a real agent and the target's tests in a sandbox — give
 # them minutes, not the 30s reasoning default. Deterministic (a constant timedelta).
 _CODING_TIMEOUT = timedelta(minutes=CODING_ACTIVITY_TIMEOUT_MINUTES)
+
+
+def _coding_timeout(plan: StoryPlan) -> timedelta:
+    """Start-to-close for the pod's CODING passes (implement + revises). A human-funded
+    budget (plan.coding_budget_usd, set at the pre-pod coding-budget gate) buys
+    proportionally more wall-clock: the flat default is sized for default-cap runs, and a
+    funded multi-story run cannot finish inside it — observed live 2026-07-07, when a
+    $15-funded 5-story run timed out at 20:00 and the Temporal retry discarded the whole
+    paid pass. Capped so a hung session can't park the workflow for days; an unfunded plan
+    (coding_budget_usd == 0) keeps the flat default, so old histories replay unchanged.
+    Pure arithmetic on the plan + config constants — deterministic."""
+    scale = max(1.0, plan.coding_budget_usd / CODING_MAX_BUDGET_USD)
+    minutes = min(CODING_ACTIVITY_TIMEOUT_MINUTES * scale, CODING_ACTIVITY_TIMEOUT_MAX_MINUTES)
+    return timedelta(minutes=minutes)
 # The await-CI activity polls the PR's checks until they conclude — minutes; its start-to-close
 # must exceed the internal poll timeout (CI_POLL_TIMEOUT_MINUTES). Deterministic constant.
 _CI_TIMEOUT = timedelta(minutes=CI_ACTIVITY_TIMEOUT_MINUTES)
@@ -53,9 +69,13 @@ class EngineeringPodWorkflow:
                 cost += r.cost_tokens
                 cost_usd += r.cost_usd
 
+        # Coding passes get wall-clock proportional to the human-funded budget (see
+        # _coding_timeout) — a funded heavy run must not die at the default-cap timeout.
+        coding_timeout = _coding_timeout(plan)
+
         # One pod session implements the whole ordered story plan in a single workspace
         # (orchestrating per-story subagents itself when the plan has multiple stories).
-        result = await run_activity(act.implement_stories, plan, timeout=_CODING_TIMEOUT)
+        result = await run_activity(act.implement_stories, plan, timeout=coding_timeout)
         qa = await run_activity(act.qa_review, plan.project, [result])
         _spend(result, qa)
 
@@ -63,7 +83,7 @@ class EngineeringPodWorkflow:
         fixes = 0
         while not qa.passed and fixes < MAX_QA_FIX_PASSES:
             fixes += 1
-            result = await run_activity(act.implement_stories, plan, timeout=_CODING_TIMEOUT)
+            result = await run_activity(act.implement_stories, plan, timeout=coding_timeout)
             qa = await run_activity(act.qa_review, plan.project, [result])
             _spend(result, qa)
 
@@ -78,7 +98,7 @@ class EngineeringPodWorkflow:
         while not review.approved and reviews < MAX_REVIEW_PASSES:
             reviews += 1
             result = await run_activity(
-                act.revise_after_review, plan, result, review, timeout=_CODING_TIMEOUT
+                act.revise_after_review, plan, result, review, timeout=coding_timeout
             )
             qa = await run_activity(act.qa_review, plan.project, [result])
             review = await run_activity(act.review_diff, plan, result)
@@ -118,7 +138,7 @@ class EngineeringPodWorkflow:
             while not ci.passed and ci_passes < MAX_CI_FIX_PASSES:
                 ci_passes += 1
                 result = await run_activity(
-                    act.revise_after_ci, plan, result, ci, timeout=_CODING_TIMEOUT
+                    act.revise_after_ci, plan, result, ci, timeout=coding_timeout
                 )
                 upd = await run_activity(act.update_pr, plan.project, branch, [result], timeout=_CODING_TIMEOUT)
                 ci = await run_activity(act.await_ci, plan.project, branch, pr.url, timeout=_CI_TIMEOUT)

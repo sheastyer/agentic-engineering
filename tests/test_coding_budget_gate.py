@@ -181,6 +181,26 @@ def test_resolved_blocks_strip_the_text_input_too():
     assert all(b["type"] not in ("actions", "input") for b in blocks)
 
 
+# --- the funded budget scales the coding activity's wall-clock -------------------------
+
+
+def test_coding_timeout_scales_with_funded_budget():
+    # Learned live 2026-07-07 (feedback-demo-e5e3b1b5): a $15-funded 5-story run hit the
+    # flat 20-min StartToClose and the Temporal retry discarded the whole paid pass. All
+    # three caps must scale together: dollars, turns (coding_backed), wall-clock (here).
+    from datetime import timedelta
+
+    from orchestrator.workflows.engineering_pod import _coding_timeout
+
+    def plan(budget: float) -> StoryPlan:
+        return StoryPlan(feature_id="F1", stories=[], project="p", coding_budget_usd=budget)
+
+    assert _coding_timeout(plan(0.0)) == timedelta(minutes=20)    # unfunded: flat default
+    assert _coding_timeout(plan(1.0)) == timedelta(minutes=20)    # below default: never shrinks
+    assert _coding_timeout(plan(15.0)) == timedelta(minutes=120)  # 6× budget -> 6× wall-clock
+    assert _coding_timeout(plan(500.0)) == timedelta(minutes=240) # ceiling: hung != forever
+
+
 # --- workflow behavior ----------------------------------------------------------------
 
 

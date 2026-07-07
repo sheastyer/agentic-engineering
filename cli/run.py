@@ -139,6 +139,12 @@ async def main() -> None:
     parser.add_argument("--bug", action="store_true", help="run a bug demo instead of a feature")
     parser.add_argument("--title", default=None)
     parser.add_argument(
+        "--body",
+        default=None,
+        help="the feedback body (the real report text — what the PM brief and the coding "
+        "pod actually work from); defaults to a demo placeholder",
+    )
+    parser.add_argument(
         "--auto-gates",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -159,7 +165,7 @@ async def main() -> None:
         id=f"demo-{uuid.uuid4().hex[:8]}",
         kind=kind,
         title=args.title or default_title,
-        body="Reported via the CLI demo driver.",
+        body=args.body or "Reported via the CLI demo driver.",
         submitted_by="cli",
         project=args.project,
     )
