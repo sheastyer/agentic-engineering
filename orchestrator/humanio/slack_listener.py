@@ -29,23 +29,38 @@ from orchestrator.shared.config import TEMPORAL_NAMESPACE, TEMPORAL_TARGET
 _log = logging.getLogger(__name__)
 
 
+def _json_dict(raw) -> dict | None:
+    try:
+        value = json.loads(raw or "")
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def parse_block_action(payload: dict) -> GateAction | None:
     """Decode a Slack ``block_actions`` payload into a GateAction, or None if it isn't
-    one of ours (wrong type, no actions, or a value that isn't our JSON envelope)."""
+    one of ours (wrong type, no actions, or no JSON envelope anywhere we expect it).
+
+    Two shapes: a **button** carries our ``{workflow_id, gate, decision}`` envelope in
+    its ``value``; a **text input** (the coding-budget gate's custom amount) can't — its
+    value IS what the human typed — so there the envelope rides ``block_id`` and the
+    typed text lands in ``GateAction.text``."""
     if payload.get("type") != "block_actions":
         return None
     actions = payload.get("actions") or []
     if not actions:
         return None
-    try:
-        value = json.loads(actions[0].get("value") or "")
-    except (json.JSONDecodeError, TypeError):
-        return None
-    if not isinstance(value, dict):
-        return None
-    workflow_id = value.get("workflow_id")
-    gate = value.get("gate")
-    decision = value.get("decision")
+    raw_value = actions[0].get("value")
+    text = ""
+    envelope = _json_dict(raw_value)
+    if envelope is None:
+        envelope = _json_dict(actions[0].get("block_id"))
+        if envelope is None:
+            return None
+        text = raw_value or ""
+    workflow_id = envelope.get("workflow_id")
+    gate = envelope.get("gate")
+    decision = envelope.get("decision")
     if not (workflow_id and gate and decision):
         return None
     user = payload.get("user") or {}
@@ -55,6 +70,7 @@ def parse_block_action(payload: dict) -> GateAction | None:
         decision=decision,
         user_id=user.get("id") or "",
         user_name=user.get("username") or user.get("name") or "",
+        text=text,
     )
 
 
@@ -69,17 +85,23 @@ async def deliver(temporal: Client, action: GateAction) -> str:
     rendered back onto the Slack message."""
     mapped = signal_for(action)
     if mapped is None:
+        if action.gate == "coding_budget" and action.decision == "custom":
+            # The typed amount didn't parse — tell the human instead of a silent drop
+            # (the card's input stays live, so they can just retype).
+            return f"⚠️ couldn't read {action.text!r} as a dollar amount (0 < $ ≤ 500) — try again"
         return f"⚠️ unrecognized gate action {action.gate}:{action.decision} — ignored"
     name, args = mapped
     await temporal.get_workflow_handle(action.workflow_id).signal(name, args=args)
     who = action.user_name or action.user_id
+    if action.gate == "coding_budget" and action.decision == "custom":
+        return f"✅ coding_budget: *custom ${args[1]:.2f}* by @{who}"
     return f"✅ {action.gate}: *{action.decision}* by @{who}"
 
 
 def resolved_blocks(original_blocks: list[dict], outcome: str) -> list[dict]:
-    """The updated message after a decision: same content, buttons removed (no
-    double-clicks), outcome appended — so the channel shows who decided what."""
-    kept = [b for b in original_blocks if b.get("type") != "actions"]
+    """The updated message after a decision: same content, buttons AND text inputs
+    removed (no double-decisions), outcome appended — the channel shows who decided what."""
+    kept = [b for b in original_blocks if b.get("type") not in ("actions", "input")]
     kept.append({"type": "context", "elements": [{"type": "mrkdwn", "text": outcome}]})
     return kept
 
@@ -141,10 +163,16 @@ async def main() -> None:
         if channel and ts:
             try:
                 original = (payload.get("message") or {}).get("blocks") or []
-                web.chat_update(
-                    channel=channel, ts=ts, text=outcome,
-                    blocks=resolved_blocks(original, outcome),
-                )
+                if outcome.startswith("✅"):
+                    blocks = resolved_blocks(original, outcome)
+                else:
+                    # No decision landed (bad amount / unmapped / signal error) — keep
+                    # the buttons and input live so the human can retry; just append
+                    # the warning under the card.
+                    blocks = original + [
+                        {"type": "context", "elements": [{"type": "mrkdwn", "text": outcome}]}
+                    ]
+                web.chat_update(channel=channel, ts=ts, text=outcome, blocks=blocks)
             except Exception as exc:  # cosmetic only — the signal already landed
                 _log.warning("chat_update failed: %s", exc)
 

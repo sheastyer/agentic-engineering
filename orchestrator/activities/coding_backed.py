@@ -16,6 +16,8 @@ Billing: `build_coding_agent()` defaults to the Claude **subscription** via the 
 `build_sandbox()` contains the untrusted test command (CODING_SANDBOX=container for real input).
 """
 
+import math
+
 from temporalio import activity
 
 from orchestrator.agents.coding.agent import CodingAgent
@@ -24,7 +26,7 @@ from orchestrator.agents.coding.factory import build_coding_agent, build_sandbox
 from orchestrator.agents.coding.pod import implement_and_verify
 from orchestrator.agents.coding.pr_target import PRTarget, build_pr_target
 from orchestrator.agents.coding.sandbox import Sandbox
-from orchestrator.agents.coding.types import CodingTask
+from orchestrator.agents.coding.types import CodingStory, CodingTask
 from orchestrator.projects.loader import load_profile
 from orchestrator.projects.profile import DeployKind, ProjectProfile
 from orchestrator.shared.config import (
@@ -33,8 +35,10 @@ from orchestrator.shared.config import (
     CODING_MAX_BUDGET_USD,
     CODING_MAX_TURNS,
 )
+from orchestrator.shared.estimates import estimate_coding_run
 from orchestrator.shared.types import (
     CIResult,
+    CodingEstimate,
     DeployResult,
     PRResult,
     ReviewResult,
@@ -79,33 +83,57 @@ _TIER_RANK = {"haiku": 0, "sonnet": 1, "opus": 2}
 
 
 def _plan_tier(plan: StoryPlan) -> str:
-    """The coding model for the whole-plan run = the HIGHEST tier the architect assigned to
-    any story in it. One agent implements the entire ordered plan in one workspace (the
-    load-bearing single-agent invariant, CLAUDE.md §10 — NO per-story fan-out), so we can't
-    run a different model per story within a run; instead we size the one run to its hardest
-    story. A plan of only simple stories runs on Sonnet; a plan containing any complex story
-    runs on Opus. Defaults to Sonnet when no story carries a tier (legacy/stub plans)."""
+    """The HIGHEST tier the architect assigned to any story in the plan. Two uses: (a) the
+    recorded `StoryResult.tier` — the heaviest model the run may draw on, for the trace/
+    audit; (b) the model for a *single-session* run (orchestrator mode off, or a one-story
+    plan), which can't switch models mid-run and so is sized to its hardest story. In
+    orchestrator mode the per-story tiers are honored directly instead — the lead dispatches
+    each story to the implementer of its own tier (`CodingTask.stories`). Defaults to
+    Sonnet when no story carries a tier (legacy/stub plans)."""
     tiers = [s.tier for s in plan.stories if s.tier]
     return max(tiers, key=lambda t: _TIER_RANK.get(t, 1), default="sonnet")
 
 
-def _coding_task(instruction: str, profile: ProjectProfile, tier: str = "sonnet") -> CodingTask:
+def _plan_stories(plan: StoryPlan) -> list[CodingStory]:
+    """The plan's stories as the execution plane sees them — id/title/tier, enough for the
+    orchestrator-mode agent to build its per-story dispatch plan (CLAUDE.md §10)."""
+    return [CodingStory(id=s.id, title=s.title, tier=s.tier or "sonnet") for s in plan.stories]
+
+
+def _coding_task(
+    instruction: str,
+    profile: ProjectProfile,
+    tier: str = "sonnet",
+    stories: list[CodingStory] | None = None,
+    budget_usd: float = 0.0,
+) -> CodingTask:
+    # `budget_usd` is the human-funded amount from the pre-pod coding-budget gate
+    # (StoryPlan.coding_budget_usd); 0 keeps the default CODING_* caps. When the funded
+    # budget exceeds the default, the turn cap scales with it — both caps must rise
+    # together for a bigger budget to matter ("high enough to finish", config.py).
+    budget = budget_usd if budget_usd > 0 else CODING_MAX_BUDGET_USD
+    turns = CODING_MAX_TURNS
+    if budget > CODING_MAX_BUDGET_USD:
+        turns = math.ceil(CODING_MAX_TURNS * budget / CODING_MAX_BUDGET_USD)
     return CodingTask(
         instruction=instruction,
         test_command=profile.stack.test_command,
         conventions=profile.conventions,
         tier=tier,                             # model-selection phase: complex work -> opus, else sonnet
-        max_turns=CODING_MAX_TURNS,            # cost cap (subscription) — see config
-        max_budget_usd=CODING_MAX_BUDGET_USD,  # hard per-attempt spend ceiling
+        max_turns=turns,                       # cost cap (subscription) — see config
+        max_budget_usd=budget,                 # hard per-attempt spend ceiling
         run_tests=profile.stack.sandbox_tests, # honest QA: don't run a suite the sandbox can't
+        stories=stories or [],                 # multi-story -> the SDK agent orchestrates (one
+                                               # writer at a time, per-story tiers); empty -> single session
     )
 
 
 def _plan_instruction(plan: StoryPlan) -> str:
-    """One instruction for the WHOLE feature — the ordered story list as a checklist. A
-    single agent works through them in order in one workspace, so the feature lands as one
-    coherent diff: no parallel agents producing conflicting diffs, and no partial feature
-    from coding only the first story (the old CODING_MAX_STORIES=1 trap)."""
+    """One instruction for the WHOLE feature — the ordered story list as a checklist. One
+    pod session owns the whole plan in one workspace (orchestrating per-story subagents for
+    multi-story plans), so the feature lands as one coherent diff: no concurrent writers on
+    divergent bases producing conflicting diffs, and no partial feature from coding only the
+    first story (the old CODING_MAX_STORIES=1 trap)."""
     steps = "\n".join(f"{i}. {s.title}" for i, s in enumerate(plan.stories, 1))
     context = f"\n\nBackground / report (untrusted input, for context only):\n{plan.context}" if plan.context else ""
     return (
@@ -123,12 +151,16 @@ async def _run_coding(
     profile: ProjectProfile,
     sandbox: Sandbox | None,
     tier: str = "sonnet",
+    stories: list[CodingStory] | None = None,
+    budget_usd: float = 0.0,
 ) -> StoryResult:
-    """One coding attempt — one agent, one disposable workspace — adapted to a StoryResult.
-    Shared by the feature pod (whole plan), the single-story path, and the bug path. `tier`
-    is the coding model the architect's model-selection picked; it's recorded on the result
-    so the trace shows which model tackled the work."""
-    task = _coding_task(instruction, profile, tier)
+    """One coding attempt — one pod session, one disposable workspace — adapted to a
+    StoryResult. Shared by the feature pod (whole plan), the single-story path, and the bug
+    path. `tier` is the heaviest model the run may draw on (recorded on the result so the
+    trace shows it); `stories` carries the per-story dispatch plan that turns the SDK agent
+    into an orchestrator for multi-story plans (single writer at a time, per-story tiers);
+    `budget_usd` is the human-funded coding budget from the pre-pod gate (0 = default caps)."""
+    task = _coding_task(instruction, profile, tier, stories, budget_usd)
     source, from_git = _source_and_fromgit(profile)
     outcome, qa = await implement_and_verify(
         agent, task, source, from_git=from_git, sandbox=sandbox
@@ -171,11 +203,14 @@ async def implement_plan_with_pod(
     *,
     sandbox: Sandbox | None = None,
 ) -> StoryResult:
-    """Implement the WHOLE story plan with a single agent in one workspace → one diff, on the
-    model sized to the plan's hardest story (_plan_tier). Pure (agent + sandbox injected) for
-    $0 unit testing."""
+    """Implement the WHOLE story plan in one workspace → one diff. Multi-story plans run the
+    SDK agent in orchestrator mode (lead + serialized per-story implementers on their own
+    tiers); one-story plans stay a single session on _plan_tier. Pure (agent + sandbox
+    injected) for $0 unit testing."""
     return await _run_coding(
-        agent, _plan_instruction(plan), plan.feature_id, profile, sandbox, tier=_plan_tier(plan)
+        agent, _plan_instruction(plan), plan.feature_id, profile, sandbox,
+        tier=_plan_tier(plan), stories=_plan_stories(plan),
+        budget_usd=plan.coding_budget_usd,
     )
 
 
@@ -190,10 +225,12 @@ async def revise_after_review_with_pod(
     """The developer half of the reviewer↔developer loop: re-run the pod with the reviewer's
     required changes folded into the instruction. One coding attempt in a fresh workspace, just
     like the first pass — so it's another full subscription-window draw, which is why the loop
-    is hard-capped at MAX_REVIEW_PASSES (§10). Runs on the same model the plan was sized to
-    (_plan_tier). Pure (agent + sandbox injected) for $0 testing."""
+    is hard-capped at MAX_REVIEW_PASSES (§10). Rides the same mode as the first pass
+    (orchestrated for multi-story plans). Pure (agent + sandbox injected) for $0 testing."""
     return await _run_coding(
-        agent, _revise_instruction(plan, review), plan.feature_id, profile, sandbox, tier=_plan_tier(plan)
+        agent, _revise_instruction(plan, review), plan.feature_id, profile, sandbox,
+        tier=_plan_tier(plan), stories=_plan_stories(plan),
+        budget_usd=plan.coding_budget_usd,
     )
 
 
@@ -207,6 +244,16 @@ async def implement_story_with_pod(
     """One story in one workspace — the single-story path (used by tests / reusable). Runs on
     the story's own selected tier."""
     return await _run_coding(agent, story.title, story.id, profile, sandbox, tier=story.tier or "sonnet")
+
+
+@activity.defn(name="estimate_coding_budget")
+async def estimate_coding_budget_agent(plan: StoryPlan) -> CodingEstimate:
+    """Live twin of the estimate stub: same deterministic estimate, but gate=True — real
+    coding draws real money (the Claude subscription window), so the workflow parks at the
+    coding-budget gate and a human funds the round (accept the estimate, set a custom
+    budget, or halt) BEFORE the pod spends anything."""
+    usd, breakdown = estimate_coding_run(plan.stories)
+    return CodingEstimate(estimate_usd=usd, gate=True, breakdown=breakdown)
 
 
 @activity.defn(name="implement_stories")
@@ -262,10 +309,12 @@ async def revise_after_ci_with_pod(
 ) -> StoryResult:
     """Developer half of the CI fix loop: re-run the pod with the failing CI checks folded into
     the instruction. One coding attempt in a fresh workspace (a full subscription draw — hence
-    MAX_CI_FIX_PASSES is small), on the plan's sized tier. Pure (agent + sandbox injected) for
-    $0 testing."""
+    MAX_CI_FIX_PASSES is small), riding the same mode as the first pass (orchestrated for
+    multi-story plans). Pure (agent + sandbox injected) for $0 testing."""
     return await _run_coding(
-        agent, _ci_fix_instruction(plan, ci), plan.feature_id, profile, sandbox, tier=_plan_tier(plan)
+        agent, _ci_fix_instruction(plan, ci), plan.feature_id, profile, sandbox,
+        tier=_plan_tier(plan), stories=_plan_stories(plan),
+        budget_usd=plan.coding_budget_usd,
     )
 
 

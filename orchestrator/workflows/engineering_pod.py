@@ -1,9 +1,12 @@
 """EngineeringPodWorkflow — the coding child (CLAUDE.md §7, §8).
 
-A feature is implemented by a **single coding agent working the architect's stories in
-order, in one workspace** — so it lands as one coherent diff (no parallel agents producing
-conflicting diffs against separate clones, and no partial feature from coding only the
-first story). The orchestrator (this workflow) then runs QA, with one bounded QA->fix pass
+A feature is implemented by **one pod session working the architect's stories in order,
+in one workspace** — so it lands as one coherent diff. For multi-story plans that session
+is itself an orchestrator (execution-plane detail, see claude_sdk.py): a lead dispatches
+per-story implementer subagents serially in the shared tree, each on the story's own model
+tier. The single-WRITER invariant holds either way: no concurrent writers, no divergent
+bases (no parallel agents producing conflicting diffs against separate clones, and no
+partial feature from coding only the first story). This workflow then runs QA, with one bounded QA->fix pass
 (MAX_QA_FIX_PASSES), then a bounded **code-review -> revise loop** (MAX_REVIEW_PASSES): a
 reasoning-plane reviewer critiques the diff and the developer (coding pod) revises against
 the feedback, so the PR is opened only after it has been reviewed and iterated on. Deploy is
@@ -50,7 +53,8 @@ class EngineeringPodWorkflow:
                 cost += r.cost_tokens
                 cost_usd += r.cost_usd
 
-        # One agent implements the whole ordered story plan in a single workspace.
+        # One pod session implements the whole ordered story plan in a single workspace
+        # (orchestrating per-story subagents itself when the plan has multiple stories).
         result = await run_activity(act.implement_stories, plan, timeout=_CODING_TIMEOUT)
         qa = await run_activity(act.qa_review, plan.project, [result])
         _spend(result, qa)

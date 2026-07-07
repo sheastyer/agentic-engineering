@@ -196,8 +196,18 @@ Ordered stages (the HTML diagram is the canonical version once it exists):
 5. `ConsumerResearchWorkflow` (child, parallel fan-out across demographic personas)
 6. **PM sign-off** (signal); `revise` loops back into PRD revision
 7. `architect_plan_stories`
+7a. **Coding-budget gate** (signal): the org estimates the coding round's cost
+    (deterministic per-story-tier heuristics, `shared/estimates.py`) and a human funds it
+    in Slack — accept the estimate, enter a custom dollar budget (text input), or halt.
+    The approved amount replaces `CODING_MAX_BUDGET_USD` for the run (the turn cap scales
+    with it) and lifts the workflow ceiling so the sanctioned round can't re-trip the
+    over-budget gate. Live coding only: the `estimate_coding_budget` stub returns
+    `gate=False`, so $0 dry-runs never park here. Timeout funds the estimate (bounded
+    spend, no stranded run); reject halts as `HELD`.
 8. `EngineeringPodWorkflow` (child, orchestrator-worker; one Agent-SDK coding pass over
-   the ordered stories → QA → **bounded code-review ↔ revise loop** (max
+   the ordered stories — for multi-story plans the pass itself is **orchestrated**: a lead
+   session dispatches per-story implementer subagents serially in one shared workspace,
+   on each story's own model tier (§10) → QA → **bounded code-review ↔ revise loop** (max
    `MAX_REVIEW_PASSES`): a reasoning-plane `code_reviewer` critiques the diff and the
    coding pod revises against it, so the PR is opened only after it's been reviewed →
    `open_pr` → **bounded CI gate ↔ fix loop** (max `MAX_CI_FIX_PASSES`): `await_ci`
@@ -211,9 +221,10 @@ Ordered stages (the HTML diagram is the canonical version once it exists):
 
 ### BugWorkflow (shorter)
 Triage → dedupe → (optional user-clarification signal w/ 7-day timeout) → PM
-prioritize → **EngineeringPodWorkflow** (child — the bug as a one-story plan, so the
-same pod machinery applies: code → review loop → QA → PR → CI gate) → QA/CI gates →
-gated deploy. One pod, two entry points; there is no bespoke bug-fix path.
+prioritize → coding-budget gate (same as stage 7a above) → **EngineeringPodWorkflow**
+(child — the bug as a one-story plan, so the same pod machinery applies: code → review
+loop → QA → PR → CI gate) → QA/CI gates → gated deploy. One pod, two entry points;
+there is no bespoke bug-fix path.
 
 ---
 
@@ -223,7 +234,8 @@ gated deploy. One pod, two entry points; there is no bespoke bug-fix path.
 - **Debate + judge** — the exec council (agents + human voter, deterministic tally).
 - **Orchestrator-worker** — the engineering pod.
 - **Parallel fan-out** — the consumer-research panel.
-- **Human-in-the-loop gates** — council, PM sign-off, deploy, user clarification.
+- **Human-in-the-loop gates** — council, PM sign-off, coding budget, deploy, user
+  clarification.
 
 ---
 
@@ -265,28 +277,45 @@ These are non-negotiable. If a task seems to require breaking one, stop and ask.
   ceiling against that product.
 - **Per-workflow budget cap.** Each activity returns its cost; the workflow accumulates
   it (in dollars) and trips into a human gate when the ceiling is hit.
+- **Fund coding up front, don't die mid-run.** Before a live coding round, the
+  coding-budget gate (§7, stage 7a) shows the human a per-story-tier estimate
+  (`CODING_EST_*` in config) and the approved amount becomes that run's pod cap — so a
+  heavy lift gets funded once at the gate instead of soft-stopping halfway at the default
+  `CODING_MAX_BUDGET_USD`. The over-budget override gate stays as the backstop for revise
+  loops that draw the funded cap again.
 - **Lightweight returns.** Subagents persist detail to shared storage and return
   references; never re-ingest large payloads through the parent.
 - **The engineering pod dominates a feature's cost — cap it hard.** It runs the Agent SDK on
   the Claude *subscription* (shared 5-hour usage window), so an uncapped pod can drain that
-  window in an hour. The guards (in `config.py` / `coding_backed.py`, learned the hard way
-  2026-06-18): **one agent implements the whole feature in one workspace** (the ordered story
-  list as a single instruction) — no fan-out of parallel agents against separate clones, which
+  window in an hour. The guards (in `config.py` / `coding_backed.py` / `claude_sdk.py`, learned
+  the hard way 2026-06-18): **one pod session owns the whole feature in one workspace — the
+  single-WRITER invariant**. The precise rule (sharpened 2026-07-06): *no concurrent writers,
+  no divergent bases* — never fan out parallel coding agents against separate clones, which
   caused both churn *and* conflicting/partial diffs (coding only story #1 of N shipped a
-  feature with no UI); a coding error must return a **failed story, never raise** (a raise = up
-  to 4× Temporal retries, each a full coding run — the worst leak); a budget/turn limit is a
-  **soft stop** — `claude_sdk` captures the partial diff instead of discarding the whole run
-  (a raise after the work is done silently wiped ~12 min of edits before this fix);
-  `CODING_MAX_TURNS`/`CODING_MAX_BUDGET_USD` hard-cap that one agent — but high enough to
-  *finish* ($0.25/8-turn produced nothing; ~$2.50/70-turn completed a real dark-mode feature at
-  ~$1.87). **Per-story model selection (the architect's job):** when it breaks the PRD into
-  stories, the architect also rates each story's *implementation* complexity (`simple`/`complex`),
-  which picks the coding model — `simple → Sonnet`, `complex → Opus` (a simple button must not
-  draw Opus). The single-agent invariant still holds (one agent codes the whole plan in one
-  workspace — NO per-story fan-out), so the run is sized to the plan's **hardest** story: an
-  all-simple plan runs on Sonnet, any complex story escalates the run to Opus. The selected
-  tier is recorded on the `StoryResult` and rendered in the trace/audit so you can see which
-  model tackled the work. Default the pod to **mock** ($0) unless coding is the point.
+  feature with no UI). Within that rule, a **multi-story plan runs in orchestrator mode**
+  (default; `CODING_ORCHESTRATOR=0` falls back to one context window): a Sonnet **lead**
+  session dispatches SDK subagents — read-only `researcher`s may fan out in parallel (enforced
+  by tool grant, not prose), while `implementer` writers run **strictly one at a time** in the
+  shared tree, each story in a fresh context window (heavy-lift headroom). The lead reviews
+  each story's diff, re-dispatches at most once with feedback, checkpoint-commits accepted
+  stories (never pushes — diff capture is pinned-baseline, so commits are safe), and ends with
+  a per-story report (the trace's per-story visibility). Other guards: a coding error must
+  return a **failed story, never raise** (a raise = up to 4× Temporal retries, each a full
+  coding run — the worst leak); a budget/turn limit is a **soft stop** — `claude_sdk` captures
+  the partial diff (checkpointed stories included) instead of discarding the run;
+  `CODING_MAX_TURNS` bounds the lead *and* each subagent, `CODING_MAX_BUDGET_USD` caps the
+  **whole tree** (the SDK aggregates subagent spend) — set both high enough to *finish*
+  ($0.25/8-turn produced nothing; ~$2.50/70-turn completed a real dark-mode feature at ~$1.87;
+  raise them for heavy lifts, along with the workflow `BUDGET_USD` ceiling, or the budget gate
+  trips to a human — which is the designed failure mode, not an error). **Per-story model
+  selection (the architect's job):** when it breaks the PRD into stories, the architect rates
+  each story's *implementation* complexity (`simple`/`complex`), which picks that story's
+  coding model — in orchestrator mode the lead dispatches `simple → implementer` (Sonnet) and
+  `complex → implementer_heavy` (Opus), so a simple button never draws Opus even inside a
+  complex plan. A one-story plan (the bug path) skips orchestration and runs a single session
+  on its story's tier; with orchestration disabled, the single session is sized to the plan's
+  **hardest** story. `StoryResult.tier` records the heaviest tier the run could draw on,
+  rendered in the trace/audit. Default the pod to **mock** ($0) unless coding is the point.
 - Multi-agent systems run roughly an order of magnitude more tokens than a single
   chat — keep fan-out widths and iteration counts capped.
 

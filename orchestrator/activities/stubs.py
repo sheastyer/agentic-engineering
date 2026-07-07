@@ -12,12 +12,14 @@ allowed here — but the stubs deliberately do neither.
 
 from temporalio import activity
 
+from orchestrator.shared.estimates import estimate_coding_run
 from orchestrator.shared.ids import feature_id as _feature_id
 from orchestrator.shared.types import (
     ArchitectReview,
     Brief,
     BugPriority,
     CIResult,
+    CodingEstimate,
     DedupeResult,
     DeployResult,
     FeedbackEvent,
@@ -140,6 +142,17 @@ async def architect_plan_stories(prd: PRD, report: ResearchReport) -> StoryPlan:
     return StoryPlan(
         feature_id=prd.feature_id, stories=stories, project=prd.project, cost_tokens=350
     )
+
+
+@activity.defn
+async def estimate_coding_budget(plan: StoryPlan) -> CodingEstimate:
+    # Stub for the pre-pod coding-budget gate: computes the same deterministic estimate
+    # as the agent-backed twin (so the numbers are visible even on dry runs) but returns
+    # gate=False — a $0 stub run has nothing to fund, so the workflow never parks here.
+    # The live twin (USE_AGENT_CODING=1, coding_backed.py) returns gate=True: a human
+    # funds the round (or sets a custom budget) before real coding spends anything.
+    usd, breakdown = estimate_coding_run(plan.stories)
+    return CodingEstimate(estimate_usd=usd, gate=False, breakdown=breakdown)
 
 
 @activity.defn
@@ -290,6 +303,7 @@ ALL_ACTIVITIES = [
     consumer_research_persona,
     synthesize_research,
     architect_plan_stories,
+    estimate_coding_budget,
     implement_stories,
     qa_review,
     review_diff,

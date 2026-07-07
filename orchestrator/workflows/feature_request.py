@@ -9,6 +9,8 @@ Stage order:
   5. ConsumerResearchWorkflow (child, parallel fan-out)
   6. PM sign-off (signal); "revise" loops back into PRD revision (bounded)
   7. architect_plan_stories
+  7a. coding-budget gate (signal): a human funds the estimated coding round, or sets a
+      custom budget — live coding only (the estimate stub returns gate=False for $0 runs)
   8. EngineeringPodWorkflow (child, orchestrator-worker)
   9. deploy approval (signal) -> deploy -> SHIPPED
 
@@ -68,7 +70,8 @@ def _research_md(report) -> str:
 
 
 class _BudgetHalt(Exception):
-    """Internal: the per-workflow budget gate was declined or timed out. Caught in run()."""
+    """Internal: a budget gate (over-budget override, or the pre-pod coding-budget gate)
+    was declined or timed out. Caught in run(); the message becomes the result summary."""
 
 
 @workflow.defn
@@ -97,6 +100,9 @@ class FeatureRequestWorkflow:
         self._deploy_approver = "unknown"
         self._budget_decision: bool | None = None  # budget-override gate
         self._budget_approver = "unknown"
+        # Coding-budget gate inbox: (decision, budget_usd, approver) — decision is
+        # "approve" (fund the estimate) | "custom" (fund budget_usd) | "reject" (halt).
+        self._coding_budget: tuple | None = None
 
     # --- signals (human gates) --------------------------------------------------
     # The `approver` args default to "unknown" so the extension is additive (replay-safe
@@ -120,6 +126,12 @@ class FeatureRequestWorkflow:
         self._budget_decision = approve
         self._budget_approver = approver
 
+    @workflow.signal
+    def submit_coding_budget(
+        self, decision: str, budget_usd: float = 0.0, approver: str = "unknown"
+    ) -> None:
+        self._coding_budget = (decision, budget_usd, approver)
+
     # --- query ------------------------------------------------------------------
     @workflow.query
     def get_state(self) -> WorkflowState:
@@ -140,8 +152,10 @@ class FeatureRequestWorkflow:
         self._ceiling = BUDGET_USD["feature"]
         try:
             result = await self._execute(event)
-        except _BudgetHalt:
-            result = self._result(event, f"Halted at budget gate (${self._cost_usd:.4f}).")
+        except _BudgetHalt as halt:
+            result = self._result(
+                event, str(halt) or f"Halted at budget gate (${self._cost_usd:.4f})."
+            )
         # One terminal post covers every exit path (shipped/held/rejected/over-budget/...).
         await self._notify_progress(
             "done",
@@ -251,6 +265,17 @@ class FeatureRequestWorkflow:
             [f"{len(plan.stories)} stories planned"]
             + [f"{s.id}: {clip(s.title)} (est {s.estimate}, {s.tier})" for s in plan.stories],
         )
+
+        # 7a. Coding-budget gate (§9.4): the pod dominates a feature's cost (§10), so before
+        # it spends anything real a human funds the round — accept the org's estimate, set a
+        # custom budget (Slack text input), or halt. The estimate activity's stub returns
+        # gate=False, so $0 dry-runs never park here; the agent-backed twin gates.
+        estimate = await self._act_raw(act.estimate_coding_budget, plan)
+        if estimate.gate:
+            plan.coding_budget_usd = await self._coding_budget_gate(estimate)
+            # The funded round is sanctioned spend: lift the workflow ceiling so the coding
+            # pass itself can't re-trip the over-budget gate (revise loops beyond it still can).
+            self._ceiling = max(self._ceiling, self._cost_usd + plan.coding_budget_usd)
 
         # 8. Engineering pod (child, orchestrator-worker)
         self._enter("engineering_pod")
@@ -421,6 +446,41 @@ class FeatureRequestWorkflow:
         self._pm_signoff = None
         self._log.append(f"pm sign-off: {decision or 'revise'} (by {self._pm_signoff_by})")
         return decision or "revise"
+
+    async def _coding_budget_gate(self, estimate) -> float:
+        """Park until a human funds the coding round: approve the estimate, set a custom
+        budget (the Slack card's text input), or reject (halt as HELD). Timeout -> fund the
+        estimate: the run was already human-approved upstream (council + PM sign-off) and
+        the estimate is the org's own sizing, so an unanswered card doesn't strand the run —
+        spend stays bounded by the estimate either way."""
+        self._enter(f"coding_budget_gate (est ${estimate.estimate_usd:.2f})")
+        self._coding_budget = None
+        await self._notify_gate(
+            "coding_budget",
+            list(estimate.breakdown)
+            + ["Fund the estimate, or enter a custom budget in USD below."],
+        )
+        try:
+            await workflow.wait_condition(
+                lambda: self._coding_budget is not None,
+                timeout=timedelta(days=BUDGET_OVERRIDE_TIMEOUT_DAYS),
+            )
+        except asyncio.TimeoutError:
+            self._log.append(
+                f"coding budget gate timed out; funding the estimate (${estimate.estimate_usd:.2f})"
+            )
+            return estimate.estimate_usd
+        decision, amount, approver = self._coding_budget
+        if decision == "reject":
+            self._status = Status.HELD
+            self._log.append(f"coding budget declined by {approver}; halted before the pod")
+            raise _BudgetHalt("Coding budget declined; halted before the engineering pod.")
+        custom = decision == "custom" and amount > 0
+        budget = amount if custom else estimate.estimate_usd
+        self._log.append(
+            f"coding budget funded: {'custom' if custom else 'estimate'} ${budget:.2f} by {approver}"
+        )
+        return budget
 
     async def _check_budget(self) -> None:
         """Trip a human budget-override gate when accumulated spend crosses the ceiling

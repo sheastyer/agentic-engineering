@@ -25,14 +25,29 @@ CODING_ACTIVITY_TIMEOUT_MINUTES = 20
 
 # Coding-pod cost controls (CLAUDE.md §10 — the pod dominates a feature's cost). The agent
 # runs on the Claude subscription, so an uncapped pod can drain the 5-hour usage window. The
-# real spend guards are structural: ONE agent implements the whole feature in one workspace
-# (no parallel-agent fan-out), and a coding error returns a failed story instead of raising
-# (no Temporal retry storm — see coding_backed). The per-attempt caps below still bound that
-# one agent, but must be high enough for it to *finish* — too low (e.g. $0.25/8 turns) and it
+# real spend guards are structural: ONE pod session owns the whole feature in one workspace
+# (single-writer invariant — in orchestrator mode it dispatches per-story implementer
+# subagents strictly one at a time; never a parallel-clone fan-out), and a coding error
+# returns a failed story instead of raising (no Temporal retry storm — see coding_backed).
+# The per-attempt caps below bound the session: MAX_TURNS bounds the lead AND each subagent
+# individually; MAX_BUDGET_USD caps the WHOLE tree (the SDK aggregates subagent spend into
+# total_cost_usd). They must be high enough to *finish* — too low (e.g. $0.25/8 turns) and it
 # stops mid-task with no committable diff, so the PR comes up empty. ~$1.50/40 turns completed
-# a real dark-mode change with headroom. Read activity-side, so plain constants are fine.
+# a real dark-mode change with headroom. For genuinely heavy lifts, raise BOTH of these and
+# the BUDGET_USD workflow ceiling below — otherwise the budget gate trips to a human, which
+# is the designed failure mode, not an error. Read activity-side, so plain constants are fine.
 CODING_MAX_TURNS = 70
 CODING_MAX_BUDGET_USD = 2.50
+
+# Coding-cost estimator — feeds the pre-pod **coding-budget gate** (§9.4): before a live
+# coding round runs, the org shows the human this estimate and they fund it (or set their
+# own budget, or halt). The approved amount replaces CODING_MAX_BUDGET_USD for that run,
+# so a heavy lift can be funded up front instead of dying mid-run at the default cap.
+# Heuristics, deliberately coarse: base = lead-session/workspace overhead, per-story cost
+# by the tier the architect assigned. Calibrated against the one real datapoint (the
+# 2026-06 dark-mode feature: ~$1.87 ≈ base + one sonnet story); refine as live runs land.
+CODING_EST_BASE_USD = 0.75
+CODING_EST_STORY_USD = {"haiku": 0.50, "sonnet": 1.25, "opus": 2.50}
 
 # Default image for the container coding agent (Option A, D9 — `CODING_AGENT=claude_container`).
 # Must carry the `claude` CLI + the target stack's runtime; supply the real one per deployment via

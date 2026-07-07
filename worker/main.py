@@ -75,6 +75,7 @@ def build_activities() -> list:
         from orchestrator.activities.coding_backed import (
             await_ci_agent,
             deploy_agent,
+            estimate_coding_budget_agent,
             implement_stories_agent,
             open_pr_agent,
             revise_after_ci_agent,
@@ -82,6 +83,11 @@ def build_activities() -> list:
             update_pr_agent,
         )
 
+        # The live estimate gates: real coding spends real money, so the workflow parks at
+        # the coding-budget gate and a human funds the round before the pod runs.
+        activities = _replace_by_name(
+            activities, "estimate_coding_budget", estimate_coding_budget_agent
+        )
         activities = _replace_by_name(activities, "implement_stories", implement_stories_agent)
         activities = _replace_by_name(activities, "revise_after_review", revise_after_review_agent)
         activities = _replace_by_name(activities, "await_ci", await_ci_agent)

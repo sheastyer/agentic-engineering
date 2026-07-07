@@ -13,11 +13,14 @@ from orchestrator.shared.types import GateNotice, ProgressNotice
 # gate -> [(label, decision, button style)]. A gate with no buttons is notify-only:
 # the clarification gate wants free text, which a button can't carry — the human
 # answers via the CLI / a direct workflow signal (submit_user_clarification).
+# The coding_budget gate additionally renders a text input (see build_blocks) so the
+# human can fund a custom dollar amount instead of the estimate.
 GATE_BUTTONS: dict[str, list[tuple[str, str, str]]] = {
     "council": [("Approve", "approve", "primary"), ("Reject", "reject", "danger")],
     "pm_signoff": [("Approve", "approve", "primary"), ("Request revision", "revise", "danger")],
     "deploy": [("Approve deploy", "approve", "primary"), ("Hold", "reject", "danger")],
     "budget": [("Approve override", "approve", "primary"), ("Halt", "reject", "danger")],
+    "coding_budget": [("Fund estimate", "approve", "primary"), ("Halt run", "reject", "danger")],
     "clarification": [],
 }
 
@@ -26,6 +29,7 @@ GATE_LABELS = {
     "pm_signoff": "PM sign-off",
     "deploy": "Deploy approval",
     "budget": "Budget override",
+    "coding_budget": "Coding budget",
     "clarification": "Reporter clarification needed",
 }
 GATE_EMOJI = {
@@ -33,6 +37,7 @@ GATE_EMOJI = {
     "pm_signoff": "✍️",
     "deploy": "🚀",
     "budget": "💸",
+    "coding_budget": "💰",
     "clarification": "❓",
 }
 
@@ -108,13 +113,27 @@ def build_progress_blocks(notice: ProgressNotice) -> list[dict]:
 
 @dataclass
 class GateAction:
-    """A human's button click, decoded from the Slack interaction payload."""
+    """A human's button click (or text-input submit), decoded from the Slack payload."""
 
     workflow_id: str
     gate: str
-    decision: str       # "approve" | "reject" | "revise"
+    decision: str       # "approve" | "reject" | "revise" | "custom" (text input)
     user_id: str        # Slack user id — checked against the approver allowlist
     user_name: str      # for the audit trail / message update
+    text: str = ""      # what the human typed, for text-input decisions ("custom")
+
+
+def parse_dollars(raw: str) -> float | None:
+    """A human-typed dollar amount ("6.50", "$12") -> float, or None when it doesn't
+    parse or fails the sanity bounds (0 < value <= 500 — a guard against absurd inputs;
+    the coding pod should never be funded past that in one click)."""
+    try:
+        value = float((raw or "").strip().lstrip("$").replace(",", ""))
+    except ValueError:
+        return None
+    if not 0 < value <= 500:
+        return None
+    return round(value, 2)
 
 
 def signal_for(action: GateAction) -> tuple[str, list] | None:
@@ -127,6 +146,15 @@ def signal_for(action: GateAction) -> tuple[str, list] | None:
         if action.decision not in ("approve", "revise"):
             return None
         return "submit_pm_signoff", [action.decision, approver]
+    if action.gate == "coding_budget":
+        if action.decision == "custom":
+            amount = parse_dollars(action.text)
+            if amount is None:
+                return None
+            return "submit_coding_budget", ["custom", amount, approver]
+        if action.decision not in ("approve", "reject"):
+            return None
+        return "submit_coding_budget", [action.decision, 0.0, approver]
     if action.decision not in ("approve", "reject"):
         return None
     approve = action.decision == "approve"
@@ -178,6 +206,30 @@ def build_blocks(notice: GateNotice) -> list[dict]:
     ]
     if buttons:
         blocks.append({"type": "actions", "block_id": f"gate:{notice.gate}", "elements": buttons})
+    if notice.gate == "coding_budget":
+        # Free-form budget: a text input that fires a block_actions payload on Enter
+        # (dispatch_action is required for inputs in messages). Buttons carry our JSON
+        # envelope in ``value``; an input's value IS the typed text, so the envelope
+        # rides ``block_id`` instead — the listener decodes both shapes.
+        blocks.append(
+            {
+                "type": "input",
+                "dispatch_action": True,
+                "block_id": json.dumps(
+                    {"workflow_id": notice.workflow_id, "gate": notice.gate, "decision": "custom"}
+                ),
+                "label": {
+                    "type": "plain_text",
+                    "text": "Or fund a custom budget (USD) — press Enter",
+                },
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": f"gate:{notice.gate}:custom",
+                    "placeholder": {"type": "plain_text", "text": "e.g. 6.50"},
+                    "dispatch_action_config": {"trigger_actions_on": ["on_enter_pressed"]},
+                },
+            }
+        )
     blocks.append(
         _meta_footer(
             notice.project, f"`{notice.workflow_id}`", f"${notice.cost_usd:.4f} spent"

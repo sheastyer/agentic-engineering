@@ -67,6 +67,7 @@ blocking poll).
 | 5 | **Consumer research** | `consumer_researcher` × N demographics | Sonnet | `ResearchFindingOutput` | Child workflow, **parallel fan-out** (§4). |
 | 6 | 🧑 **PM sign-off** | — | — | — | `revise` loops back into PRD revision, bounded by `MAX_SIGNOFF_REVISIONS` (2). |
 | 7 | `architect_plan_stories` | `architect_plan_stories` | Opus | `StoryPlanOutput` | PRD → independently shippable stories with effort estimates. |
+| 7a | 🧑 **Coding budget** | — | — | — | Live coding only: the org estimates the round (per-story-tier heuristics) and a human funds it in Slack — accept the estimate, type a custom USD budget, or halt. The approved amount becomes the pod's spend cap for the run. Timeout funds the estimate. |
 | 8 | **Engineering pod** | one coding agent, whole feature (Claude Agent SDK) | — | — | Child workflow (§4) — implements all stories in one workspace, QAs, and **opens a PR**. |
 | 9 | 🧑 **Deploy approval** | — | — | — | Then `deploy` via the profile's deploy target → `SHIPPED`. |
 
@@ -87,7 +88,8 @@ A visual of this flow lives in
 
 ```
 triage → dedupe → (optional 🧑 user-clarification, 7-day timeout)
-       → PM prioritize → engineering pod (child: code → review loop → QA → PR → CI)
+       → PM prioritize → 🧑 coding budget (live coding only)
+       → engineering pod (child: code → review loop → QA → PR → CI)
        → QA/CI gates → 🧑 deploy approval → shipped
 ```
 
@@ -151,12 +153,17 @@ classic multi-agent pattern:
   (`DEFAULT_RESEARCH_PERSONAS` — budget-conscious, time-constrained professional, power
   user, first-time user) is bounded by the caller-supplied list. Findings persist detail
   to storage and return lightweight references, not raw transcripts.
-- **`EngineeringPodWorkflow` — single coding pass.** A **single agent** (the **Claude Agent
-  SDK** in a disposable clone) implements the architect's stories **in order, in one
-  workspace** — the ordered story list handed over as one instruction — so the feature lands
-  as one coherent diff. (This deliberately is *not* a per-story parallel fan-out: independent
-  agents on separate clones caused churn, conflicting diffs, and partial features. Parallel
-  fan-out is the right pattern for *research*, not for cohesive coding.) The pod then runs QA
+- **`EngineeringPodWorkflow` — single coding pass, single writer.** One pod session (the
+  **Claude Agent SDK** in a disposable clone) implements the architect's stories **in order,
+  in one workspace**, so the feature lands as one coherent diff. For multi-story plans that
+  session runs in **orchestrator mode**: a Sonnet lead dispatches read-only `researcher`
+  subagents (parallel-safe by tool grant) and per-story `implementer`/`implementer_heavy`
+  writers — **strictly one at a time** in the shared tree, each story in a fresh context
+  window on the model tier the architect rated it for, with a checkpoint commit per accepted
+  story. (This deliberately is *not* a per-story parallel fan-out: independent writers on
+  separate clones caused churn, conflicting diffs, and partial features — the invariant is
+  *no concurrent writers, no divergent bases*. Parallel fan-out is the right pattern for
+  *research*, not for cohesive coding.) The pod then runs QA
   (one bounded `MAX_QA_FIX_PASSES` pass) and **opens a PR** through a pluggable `PRTarget`
   (`orchestrator/agents/coding/pr_target.py`: `local` clones/applies/commits a dry-run branch
   with no push; `github` pushes + `gh pr create`). A coding error returns a *failed* story
@@ -280,7 +287,8 @@ All the org-wide dials live in `orchestrator/shared/config.py`. The ones you'll 
 | `MAX_PRD_PASSES` | 3 | PRD ⇄ architect review loop |
 | `MAX_SIGNOFF_REVISIONS` | 2 | PM sign-off → PRD revision loopback |
 | `MAX_QA_FIX_PASSES` | 0 | engineering-pod QA → fix loop (0 while the example target's tests can't run in the sandbox — a fix pass can't go green, so it would just double cost; set 1 when QA can pass) |
-| `CODING_MAX_TURNS` / `CODING_MAX_BUDGET_USD` | 70 / $2.50 | caps on the pod's single coding agent (one agent does the whole feature). A budget/turn stop is a *soft* stop — the partial diff is captured, never discarded — but these must be high enough to *finish* (a real dark-mode feature ran ~$1.87) |
+| `CODING_MAX_TURNS` / `CODING_MAX_BUDGET_USD` | 70 / $2.50 | caps on the pod's single coding agent (one agent does the whole feature) — the *defaults*: a live run's cap is whatever the human funded at the coding-budget gate (the turn cap scales with it). A budget/turn stop is a *soft* stop — the partial diff is captured, never discarded — but these must be high enough to *finish* (a real dark-mode feature ran ~$1.87) |
+| `CODING_EST_BASE_USD` / `CODING_EST_STORY_USD` | $0.75 / haiku $0.50 · sonnet $1.25 · opus $2.50 | the coding-budget gate's estimate heuristics (session overhead + per-story tier cost) |
 | `CODING_ACTIVITY_TIMEOUT_MINUTES` | 20 | coding/PR activities run minutes, not the 180s reasoning default |
 | `BUDGET_USD` | feature $3 / bug $0.50 | per-workflow dollar ceiling → human gate |
 | `COUNCIL_TIMEOUT_HOURS` | 72 | human council vote before agent-majority fallback |
