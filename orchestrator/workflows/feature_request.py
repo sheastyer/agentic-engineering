@@ -288,6 +288,8 @@ class FeatureRequestWorkflow:
         self._cost_usd += pod.cost_usd
         await self._check_budget()
         # Verdicts on one line — the deploy gate card that follows carries the detail.
+        # QA screenshots ride this post as uploads into the thread; when QA passed but
+        # nothing was captured, the note says why (honest absence beats silence).
         await self._notify_progress(
             "engineering",
             [
@@ -297,7 +299,9 @@ class FeatureRequestWorkflow:
                 f"QA {'passed' if pod.qa.passed else 'failed'}"
                 f" · review {'approved' if pod.review_approved else 'unresolved'}"
                 f" · CI {clip(pod.ci_notes) or 'n/a'}",
-            ],
+            ]
+            + self._screenshot_lines(pod),
+            image_refs=list(pod.screenshots),
         )
 
         # 8a. QA gate (hard, symmetric with CI): the QA agent's final verdict on the pod's
@@ -331,7 +335,12 @@ class FeatureRequestWorkflow:
                 f"review: {'approved' if pod.review_approved else 'unresolved'}"
                 + (f" — {clip(pod.review_notes)}" if pod.review_notes else ""),
                 f"CI: {clip(pod.ci_notes) or 'n/a'}" + (f" ({pod.ci_url})" if pod.ci_url else ""),
-            ],
+            ]
+            + (
+                [f"screenshots: {len(pod.screenshots)} in thread (📸 engineering post)"]
+                if pod.screenshots
+                else []
+            ),
         )
         try:
             await workflow.wait_condition(
@@ -529,8 +538,24 @@ class FeatureRequestWorkflow:
         except Exception:
             self._log.append(f"gate notification failed ({gate}); gate still open on its timeout")
 
+    @staticmethod
+    def _screenshot_lines(pod) -> list[str]:
+        """One honest line about post-QA screenshots for the engineering post: how many
+        rode the thread, or why none did (only when QA passed — a failed QA never
+        attempts capture). Pure formatting — deterministic."""
+        if pod.screenshots:
+            return [f"screenshots: {len(pod.screenshots)} in thread"]
+        if pod.qa.passed and pod.screenshot_note:
+            return [f"screenshots: none ({clip(pod.screenshot_note)})"]
+        return []
+
     async def _notify_progress(
-        self, stage: str, text: list[str], document_title: str = "", document_md: str = ""
+        self,
+        stage: str,
+        text: list[str],
+        document_title: str = "",
+        document_md: str = "",
+        image_refs: list[str] | None = None,
     ) -> None:
         """Post a stage update into the run's Slack thread (advisory, like _notify_gate).
         The first post anchors the thread: its returned ts is stored (deterministically —
@@ -543,6 +568,7 @@ class FeatureRequestWorkflow:
             text=list(text),
             document_title=document_title,
             document_md=document_md,
+            image_refs=list(image_refs or []),
             thread_ts=self._thread_ts,
             cost_usd=round(self._cost_usd, 4),
         )

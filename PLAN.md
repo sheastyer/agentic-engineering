@@ -238,6 +238,39 @@ hardcoded demo text; the PM brief and the pod need the real report). Still pendi
 full multi-story live run to the PR (the run was cut at the timeout one story from a
 complete diff).
 
+**Update (2026-07-07) — post-QA screenshots in the run's Slack thread:** the org now
+produces **visual evidence**: after the pod's QA verdict passes (and the CI fix loop
+settles, so the shots match exactly the diff the deploy gate would merge), a new
+`capture_screenshots` activity (stub $0 no-op / live twin under `USE_AGENT_CODING=1`)
+clones the target, applies the pod's diff, boots the app via a new **`Preview` section
+of the Project Profile** (§3 — the only place boot knowledge lives: `up`/`down`
+commands, base URL, health path, routes, optional API-login spec), waits for ready, and
+screenshots each declared route with headless Chromium (Playwright sync API — the
+activity is a sync `def` in the thread pool, same rationale as the Slack notifier).
+Refs ride `PodResult.screenshots` (lightweight returns); the parent's 🤖 engineering
+post carries them as `ProgressNotice.image_refs` and the live notifier uploads each PNG
+**into the run's existing thread**; the deploy-gate card points at them ("screenshots:
+N in thread"). Advisory by construction: every capture failure (no preview config, diff
+won't apply, app never ready, Playwright missing) degrades to `captured=False` + an
+honest note on the engineering post — it can never kill a run carrying a paid-for diff
+(same rule as QA-fails-safe), and teardown always runs. Isolation: `preview.up` must
+itself containerize repo code (D9) — the meal-planner profile uses the repo's own
+docker-compose stack under an isolated compose project name (`mealplanner-preview`,
+port 3411, generated `.env.local`, dummy Tavily key) and a signup-API login spec so
+authed pages render against the throwaway DB (caveat: the compose file pins
+`container_name`, so don't run the preview on a host serving the real stack).
+`[preview]` extra (`playwright`; run `playwright install chromium` once — done on this
+host). Workflow shape changed (a new pod activity after the CI loop) — drain in-flight
+runs, per the R6 precedent. **206 tests green** (`test_screenshots.py`: 16 new —
+profile validation, capture happy/failure/teardown paths, stub, both workflow wirings,
+thread uploads incl. degradation). **Capture validated live (same day, standalone):**
+real meal-planner clone + diff → compose boot on 3411 → signup login (first attempt
+400'd: the app's username regex `^[a-z0-9_]{3,30}$` rejects hyphens — profile fixed to
+`org_preview`) → 4 authenticated Chromium screenshots (onboarding wizard; shopping page
+incl. the org-shipped dark-mode toggle) → clean teardown (no containers left; preview
+volumes isolated from the dev stack). Still pending: the full-thread version through a
+real `USE_AGENT_CODING=1` + `ORG_SLACK=1` run (shots landing in the Slack thread).
+
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`
   & `EngineeringPod` children. All stages currently call **stub** activities

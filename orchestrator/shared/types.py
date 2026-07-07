@@ -196,6 +196,24 @@ class QAResult:
 
 
 @dataclass
+class ScreenshotSet:
+    """What the post-QA screenshot capture produced — visual evidence of the change
+    running in a preview of the target app (profile-declared routes, diff applied).
+
+    ``refs`` are file paths on the worker host (lightweight returns, §10) that the
+    notify activity uploads into the run's Slack thread. Advisory by construction: the
+    capture activity returns ``captured=False`` with an honest ``note`` on any failure
+    (no preview config, app never booted, Playwright missing) and NEVER raises — a
+    missing screenshot must not kill a run carrying a paid-for diff."""
+
+    captured: bool
+    refs: list[str] = field(default_factory=list)
+    note: str = ""
+    cost_tokens: int = 0
+    cost_usd: float = 0.0
+
+
+@dataclass
 class PodResult:
     # One agent implements the whole ordered story plan in a single workspace, so the pod
     # produces exactly ONE coherent result (not a per-story list — that was the retired
@@ -209,6 +227,8 @@ class PodResult:
     ci_passed: bool = True      # did the PR's CI go green (after the bounded CI fix loop)? gates the merge. True when CI is unavailable (mock/local runs) so $0 dry-runs aren't blocked.
     ci_url: str = ""            # link to the CI run, surfaced to the human
     ci_notes: str = ""          # CI verdict / failing-check summary
+    screenshots: list[str] = field(default_factory=list)  # post-QA UI screenshots (file refs; captured only when QA passed)
+    screenshot_note: str = ""   # why screenshots are present/absent — honest either way
     cost_tokens: int = 0
     cost_usd: float = 0.0
 
@@ -328,6 +348,8 @@ class ProgressNotice:
     text: list[str] = field(default_factory=list)
     document_title: str = ""    # set together with document_md
     document_md: str = ""       # markdown source of the artifact to attach
+    image_refs: list[str] = field(default_factory=list)  # image files (worker-host paths) to
+                                # upload into the thread alongside the post (QA screenshots)
     thread_ts: str = ""
     cost_usd: float = 0.0
 

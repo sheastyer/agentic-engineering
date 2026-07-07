@@ -74,6 +74,7 @@ def build_activities() -> list:
     if os.environ.get("USE_AGENT_CODING"):
         from orchestrator.activities.coding_backed import (
             await_ci_agent,
+            capture_screenshots_agent,
             deploy_agent,
             estimate_coding_budget_agent,
             implement_stories_agent,
@@ -89,6 +90,7 @@ def build_activities() -> list:
             activities, "estimate_coding_budget", estimate_coding_budget_agent
         )
         activities = _replace_by_name(activities, "implement_stories", implement_stories_agent)
+        activities = _replace_by_name(activities, "capture_screenshots", capture_screenshots_agent)
         activities = _replace_by_name(activities, "revise_after_review", revise_after_review_agent)
         activities = _replace_by_name(activities, "await_ci", await_ci_agent)
         activities = _replace_by_name(activities, "revise_after_ci", revise_after_ci_agent)

@@ -29,6 +29,11 @@ CI_ACTIVITY_TIMEOUT_MINUTES = 25  # start-to-close for the await_ci activity (> 
 CODING_ACTIVITY_TIMEOUT_MINUTES = 20
 CODING_ACTIVITY_TIMEOUT_MAX_MINUTES = 240
 
+# Post-QA screenshot capture (the pod's visual evidence): clone + apply diff + boot the
+# target's preview stack (a compose build can take minutes) + screenshot the routes.
+# Advisory work, but it needs coding-scale wall-clock, not the reasoning default.
+PREVIEW_ACTIVITY_TIMEOUT_MINUTES = 25
+
 # Coding-pod cost controls (CLAUDE.md §10 — the pod dominates a feature's cost). The agent
 # runs on the Claude subscription, so an uncapped pod can drain the 5-hour usage window. The
 # real spend guards are structural: ONE pod session owns the whole feature in one workspace
