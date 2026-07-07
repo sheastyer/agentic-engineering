@@ -154,6 +154,9 @@ class StoryPlan:
                                 # bug report body on the bug path); untrusted text, quoted in the prompt
     coding_budget_usd: float = 0.0  # human-funded budget for the coding round (set at the
                                 # pre-pod coding-budget gate); 0 = the default CODING_* caps
+    thread_ts: str = ""         # the run's Slack thread anchor, carried so the pod can post its
+                                # coding play-by-play into the same thread ("" = no thread / Slack off)
+    title: str = ""             # the run's human-facing title, for the pod's notification banners
     cost_tokens: int = 0
     cost_usd: float = 0.0
 

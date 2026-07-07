@@ -20,7 +20,7 @@ _STATUS_EMOJI = {
     "held": "🔴", "halt": "🔴", "blocked": "🔴", "error": "🔴", "no": "🔴",
     "unresolved": "⚪", "skipped": "⚪", "skip": "⚪", "pending": "⚪", "n/a": "⚪",
     "unavailable": "⚪", "none": "⚪",
-    "partial": "🟡", "warn": "🟡", "warning": "🟡", "revise": "🟡",
+    "partial": "🟡", "warn": "🟡", "warning": "🟡", "revise": "🟡", "changes": "🟡",
 }
 
 
@@ -95,6 +95,13 @@ STAGE_LABELS = {
     "research": "Consumer research",
     "stories": "Story plan",
     "engineering": "Engineering pod",
+    # Fine-grained engineering-pod steps (posted by EngineeringPodWorkflow into the same
+    # thread) so a coding run is a play-by-play, not one silent block until it finishes.
+    "coding": "Coding",
+    "qa": "QA",
+    "code_review": "Code review",
+    "pr_opened": "PR opened",
+    "ci": "CI",
     "triage": "Triage",
     "done": "Run finished",
 }
@@ -107,6 +114,11 @@ STAGE_EMOJI = {
     "research": "🔬",
     "stories": "🧱",
     "engineering": "🤖",
+    "coding": "🛠️",
+    "qa": "🧪",
+    "code_review": "🔎",
+    "pr_opened": "🔀",
+    "ci": "⚙️",
     "triage": "🩺",
     "done": "🏁",
 }

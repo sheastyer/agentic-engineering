@@ -29,6 +29,13 @@ GET_STATE = FeatureRequestWorkflow.get_state
 ROOT_TS = "1111.2222"
 
 
+def _is_subsequence(expected: list[str], actual: list[str]) -> bool:
+    """Does `expected` appear in `actual` in order (gaps allowed)? Lets us assert the
+    parent's stage order without pinning the pod's interleaved play-by-play posts."""
+    it = iter(actual)
+    return all(stage in it for stage in expected)
+
+
 def _progress_recorder(records: list[ProgressNotice]):
     @activity.defn(name="notify_progress")
     async def record(notice: ProgressNotice) -> NotifyResult:
@@ -73,10 +80,21 @@ async def test_feature_run_posts_every_stage_into_one_thread():
 
     assert result.status == Status.SHIPPED
     stages = [n.stage for n in progress]
-    assert stages == [
-        "feedback_received", "brief", "council", "prd", "mocks",
-        "research", "stories", "engineering", "done",
-    ]
+    # The parent's own stages post in order (as a subsequence — the engineering pod now
+    # interleaves its own play-by-play posts between "stories" and "engineering").
+    assert _is_subsequence(
+        [
+            "feedback_received", "brief", "council", "prd", "mocks",
+            "research", "stories", "engineering", "done",
+        ],
+        stages,
+    )
+    # The pod posts its coding play-by-play into the same thread (visibility into the run).
+    pod_stages = {"coding", "qa", "code_review", "pr_opened", "ci"}
+    assert pod_stages <= set(stages)
+    # ...and every pod post lands after the story plan and before the parent's summary.
+    first_pod = min(stages.index(s) for s in pod_stages)
+    assert stages.index("stories") < first_pod < stages.index("engineering")
     # Thread anchoring: the root posts with no thread; everything after threads onto
     # the ts the root's activity returned — gates included.
     assert progress[0].thread_ts == ""
@@ -117,7 +135,12 @@ async def test_bug_run_posts_progress_thread():
             result = await handle.result()
 
     assert result.status == Status.SHIPPED
-    assert [n.stage for n in progress] == ["feedback_received", "triage", "engineering", "done"]
+    stages = [n.stage for n in progress]
+    assert _is_subsequence(
+        ["feedback_received", "triage", "engineering", "done"], stages
+    )
+    # The bug rides the same pod, so it too posts a coding play-by-play into the thread.
+    assert {"coding", "qa", "code_review", "pr_opened"} <= set(stages)
     assert progress[0].thread_ts == ""
     assert all(n.thread_ts == ROOT_TS for n in progress[1:])
 
