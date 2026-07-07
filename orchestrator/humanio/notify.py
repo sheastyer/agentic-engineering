@@ -70,9 +70,10 @@ def _document_filename(notice: ProgressNotice, ext: str) -> str:
 
 def notify_progress_with_client(notice: ProgressNotice, client, channel: str) -> NotifyResult:
     """Post a stage update into the run's thread; upload document_md as a PDF alongside
-    (falling back to the raw markdown if rendering fails). The message is the primary
-    outcome: an upload failure still reports delivered=True so the workflow keeps the
-    thread anchor — only a failed post is a failed notification."""
+    (falling back to the raw markdown if rendering fails) and any image_refs (post-QA
+    screenshots) as files in the same thread. The message is the primary outcome: an
+    upload failure still reports delivered=True so the workflow keeps the thread
+    anchor — only a failed post is a failed notification."""
     try:
         resp = client.chat_postMessage(
             channel=channel,
@@ -116,6 +117,31 @@ def notify_progress_with_client(notice: ProgressNotice, client, channel: str) ->
                 notice.workflow_id, notice.stage, exc,
             )
             note = f"posted, but document upload failed: {exc}"
+
+    if notice.image_refs:
+        thread = notice.thread_ts or ts
+        failed: list[str] = []
+        for ref in notice.image_refs:
+            name = os.path.basename(ref)
+            try:
+                if not os.path.isfile(ref):
+                    raise FileNotFoundError(ref)
+                client.files_upload_v2(
+                    channel=channel,
+                    thread_ts=thread,
+                    file=ref,
+                    filename=name,
+                    title=name,
+                )
+            except Exception as exc:
+                _log.warning(
+                    "slack screenshot upload failed for %s stage %r (%s): %s",
+                    notice.workflow_id, notice.stage, name, exc,
+                )
+                failed.append(name)
+        if failed:
+            joined = ", ".join(failed)
+            note = (note + "; " if note else "") + f"screenshot upload failed: {joined}"
     return NotifyResult(delivered=True, note=note, ts=ts)
 
 

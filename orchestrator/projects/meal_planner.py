@@ -10,10 +10,25 @@ from orchestrator.projects.profile import (
     DeployKind,
     Intake,
     IntakeKind,
+    Preview,
+    PreviewLogin,
     ProjectProfile,
     Repo,
     Stack,
 )
+
+# Post-QA screenshot preview (see profile.Preview). The repo's own docker-compose stack
+# (db + migrate + app, health at /api/health) boots the checkout with the pod's diff
+# applied — repo code stays containerized (D9). Isolation from a real local stack:
+# a dedicated compose project name + APP_PORT 3411 give this run its own volumes,
+# network, and port. (Caveat: the compose file pins container_name for db/app, which
+# -p can't rename — don't run the preview on a host already running the real stack.)
+# The .env.local the compose file requires is generated inline; TAVILY_API_KEY is a
+# dummy (recipe search degrades, pages still render). The login spec signs up a
+# throwaway household against the empty preview DB, so authed pages render too —
+# a brand-new household lands on /onboarding, which is honest first-run UI.
+_PREVIEW_ENV = "APP_PORT=3411\\nPOSTGRES_PASSWORD=preview\\nTAVILY_API_KEY=preview-dummy\\n"
+_COMPOSE = "docker compose --env-file .env.local -p mealplanner-preview"
 
 PROFILE = ProjectProfile(
     id="meal-planner",
@@ -55,4 +70,21 @@ PROFILE = ProjectProfile(
         # logical name -> env var name (the value lives in the secret store, never here)
         "github_token": "MEALPLANNER_GITHUB_TOKEN",
     },
+    preview=Preview(
+        up=f"printf '{_PREVIEW_ENV}' > .env.local && {_COMPOSE} up -d --build",
+        down=f"{_COMPOSE} down -v --remove-orphans",
+        url="http://localhost:3411",
+        ready_path="/api/health",
+        ready_timeout_s=300,
+        up_timeout_s=900,  # first compose build of the Next.js image takes minutes
+        routes=["/login", "/onboarding", "/calendar", "/shopping"],
+        # Signup against the empty preview DB sets the session cookie; the credential
+        # is a disposable fixture for an ephemeral database, not a secret. Username
+        # must match the app's ^[a-z0-9_]{3,30}$ (no hyphens — a hyphen 400s, observed
+        # in the 2026-07-07 live validation).
+        login=PreviewLogin(
+            api_path="/api/auth/signup",
+            json_body={"username": "org_preview", "password": "org-preview-pass"},
+        ),
+    ),
 )

@@ -28,6 +28,7 @@ with workflow.unsafe.imports_passed_through():
         MAX_CI_FIX_PASSES,
         MAX_QA_FIX_PASSES,
         MAX_REVIEW_PASSES,
+        PREVIEW_ACTIVITY_TIMEOUT_MINUTES,
     )
     from orchestrator.shared.types import CIResult, PodResult, StoryPlan
     from orchestrator.workflows.common import run_activity
@@ -52,6 +53,9 @@ def _coding_timeout(plan: StoryPlan) -> timedelta:
 # The await-CI activity polls the PR's checks until they conclude — minutes; its start-to-close
 # must exceed the internal poll timeout (CI_POLL_TIMEOUT_MINUTES). Deterministic constant.
 _CI_TIMEOUT = timedelta(minutes=CI_ACTIVITY_TIMEOUT_MINUTES)
+
+# Screenshot capture boots the target's preview stack (compose build = minutes). Constant.
+_PREVIEW_TIMEOUT = timedelta(minutes=PREVIEW_ACTIVITY_TIMEOUT_MINUTES)
 
 
 @workflow.defn
@@ -144,6 +148,21 @@ class EngineeringPodWorkflow:
                 ci = await run_activity(act.await_ci, plan.project, branch, pr.url, timeout=_CI_TIMEOUT)
                 _spend(result, upd, ci)
 
+        # Post-QA visual evidence: screenshot the app with the FINAL diff applied (after
+        # the CI fix loop, so the shots match exactly what the deploy gate would merge).
+        # Only when QA passed — the user-facing promise is "screenshots of successful QA".
+        # Advisory: the activity converts every failure into captured=False + a note, so
+        # a broken preview can never kill a pod that's carrying a finished diff (§10).
+        screenshots: list[str] = []
+        screenshot_note = ""
+        if qa.passed:
+            shots = await run_activity(
+                act.capture_screenshots, plan.project, [result], timeout=_PREVIEW_TIMEOUT
+            )
+            _spend(shots)
+            screenshots = list(shots.refs)
+            screenshot_note = shots.note
+
         return PodResult(
             story_result=result,
             qa=qa,
@@ -154,6 +173,8 @@ class EngineeringPodWorkflow:
             ci_passed=ci.passed,
             ci_url=ci.url,
             ci_notes=ci.failing_summary or ci.status,
+            screenshots=screenshots,
+            screenshot_note=screenshot_note,
             cost_tokens=cost,
             cost_usd=cost_usd,
         )

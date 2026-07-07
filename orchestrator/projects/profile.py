@@ -67,6 +67,41 @@ class Deploy:
 
 
 @dataclass
+class PreviewLogin:
+    """How the screenshot capture obtains a session in the preview stack (optional).
+
+    A POST to ``api_path`` with ``json_body`` must set the app's session cookie (the
+    capture browser shares the cookie jar). For a throwaway preview stack this usually
+    means the *signup* endpoint against the empty preview DB — the body is a disposable
+    fixture credential for an ephemeral database, not a secret (§9.3 governs real
+    credentials, which stay in the secret store)."""
+
+    api_path: str
+    json_body: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class Preview:
+    """How to boot this project for post-QA screenshots (the org's visual evidence).
+
+    ``up`` runs in a fresh checkout with the pod's diff applied. It MUST keep
+    repo-authored code inside a container boundary itself (e.g. a `docker compose up`)
+    — the org runs the command on the host, so a bare `npm run dev` here would execute
+    untrusted code outside the sandbox (§9.6/D9). ``down`` always runs (teardown), and
+    should use an isolated compose project name so a developer's real stack on the same
+    host is never touched."""
+
+    up: str                          # bring the app up (containerized), detached
+    down: str                        # tear it down (always runs)
+    url: str                         # base URL once up, e.g. http://localhost:3411
+    ready_path: str = "/"            # polled (HTTP 200) until the app is ready
+    ready_timeout_s: int = 300       # how long to wait for readiness after `up`
+    up_timeout_s: int = 900          # wall-clock for the `up` command itself (image builds)
+    routes: list[str] = field(default_factory=lambda: ["/"])  # pages to screenshot
+    login: PreviewLogin | None = None
+
+
+@dataclass
 class ProjectProfile:
     # identity + domain context the agents need
     id: str
@@ -79,6 +114,8 @@ class ProjectProfile:
     conventions: list[str] = field(default_factory=list)
     # references to credentials in the secret store: logical name -> env var name (NOT a value)
     secret_refs: dict[str, str] = field(default_factory=dict)
+    # optional: how to boot the app for post-QA screenshots; None = no visual evidence
+    preview: Preview | None = None
 
     def validate(self) -> None:
         """Raise ValueError on a malformed profile. Cheap structural checks only."""
@@ -98,6 +135,13 @@ class ProjectProfile:
             raise ValueError(f"profile {self.id!r}: intake.kind must be an IntakeKind")
         if not isinstance(self.deploy.kind, DeployKind):
             raise ValueError(f"profile {self.id!r}: deploy.kind must be a DeployKind")
+        if self.preview is not None:
+            if not (self.preview.up and self.preview.down and self.preview.url):
+                raise ValueError(
+                    f"profile {self.id!r}: preview needs up, down, and url (or omit preview)"
+                )
+            if not self.preview.routes:
+                raise ValueError(f"profile {self.id!r}: preview.routes must be non-empty")
         # secret_refs must be references (env var names), never inline secrets.
         for logical, ref in self.secret_refs.items():
             if any(marker in ref for marker in ("sk-ant-", "whsec_")) or len(ref) > 64:

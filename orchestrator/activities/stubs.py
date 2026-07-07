@@ -34,6 +34,7 @@ from orchestrator.shared.types import (
     ResearchFinding,
     ResearchReport,
     ReviewResult,
+    ScreenshotSet,
     Story,
     StoryPlan,
     StoryResult,
@@ -179,6 +180,15 @@ async def qa_review(project: str, story_results: list[StoryResult]) -> QAResult:
 
 
 @activity.defn
+async def capture_screenshots(project: str, story_results: list[StoryResult]) -> ScreenshotSet:
+    # Stub for the post-QA screenshot capture. The live twin (USE_AGENT_CODING=1,
+    # coding_backed.py) boots the target's preview stack with the pod's diff applied and
+    # screenshots the profile's routes; the stub is a $0 no-op so dry runs stay free.
+    # Advisory either way: a missing screenshot never blocks the run.
+    return ScreenshotSet(captured=False, note="(stub) no preview capture")
+
+
+@activity.defn
 async def review_diff(plan: StoryPlan, story_result: StoryResult) -> ReviewResult:
     # Stub for the reviewer↔developer loop (runs BEFORE the PR opens). The agent-backed twin
     # runs a reasoning-plane code reviewer over the diff. The stub approves so the loop is a
@@ -306,6 +316,7 @@ ALL_ACTIVITIES = [
     estimate_coding_budget,
     implement_stories,
     qa_review,
+    capture_screenshots,
     review_diff,
     revise_after_review,
     open_pr,

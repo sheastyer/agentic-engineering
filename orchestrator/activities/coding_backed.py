@@ -17,6 +17,7 @@ Billing: `build_coding_agent()` defaults to the Claude **subscription** via the 
 """
 
 import math
+import os
 
 from temporalio import activity
 
@@ -25,6 +26,7 @@ from orchestrator.agents.coding.ci import CIChecker, build_ci_checker
 from orchestrator.agents.coding.factory import build_coding_agent, build_sandbox
 from orchestrator.agents.coding.pod import implement_and_verify
 from orchestrator.agents.coding.pr_target import PRTarget, build_pr_target
+from orchestrator.agents.coding.preview import capture_preview_screenshots
 from orchestrator.agents.coding.sandbox import Sandbox
 from orchestrator.agents.coding.types import CodingStory, CodingTask
 from orchestrator.projects.loader import load_profile
@@ -42,6 +44,7 @@ from orchestrator.shared.types import (
     DeployResult,
     PRResult,
     ReviewResult,
+    ScreenshotSet,
     Story,
     StoryPlan,
     StoryResult,
@@ -330,6 +333,26 @@ async def revise_after_ci_agent(plan: StoryPlan, story_result: StoryResult, ci: 
         )
     except Exception as exc:  # noqa: BLE001 — deliberate: convert to a failed result, don't retry
         return _failed_story(plan.feature_id, exc)
+
+
+@activity.defn(name="capture_screenshots")
+def capture_screenshots_agent(project: str, story_results: list[StoryResult]) -> ScreenshotSet:
+    """Live post-QA screenshot capture: boot the profile's preview stack with the pod's
+    diff applied and screenshot the declared routes (visual evidence for the Slack
+    thread + the human at the deploy gate). Registered under the stub's name.
+
+    A **sync** ``def`` on purpose: Playwright's sync API refuses to run on a live event
+    loop, and the compose bring-up blocks for minutes — the worker's thread-pool
+    ``activity_executor`` is exactly where that belongs (same rationale as the Slack
+    notifier). Never raises: capture_preview_screenshots converts every failure into an
+    honest ``captured=False`` note (§10 — advisory work after the paid coding pass)."""
+    profile = load_profile(project)
+    out_dir = os.path.join(
+        "runs", project, "screenshots", activity.info().workflow_id
+    )
+    return capture_preview_screenshots(
+        profile, [r.diff for r in story_results], out_dir
+    )
 
 
 def await_ci_with_checker(

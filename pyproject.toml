@@ -30,6 +30,12 @@ slack = [
     "fpdf2>=2.7",
     "markdown>=3.5",
 ]
+# Post-QA screenshot capture (the pod's visual evidence in the Slack thread) — only the
+# live capture activity imports Playwright, lazily; stub/$0 runs never need it. After
+# installing, run `playwright install chromium` once on the worker host.
+preview = [
+    "playwright>=1.48",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
