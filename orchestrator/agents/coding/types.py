@@ -9,6 +9,17 @@ from dataclasses import dataclass, field
 
 
 @dataclass
+class CodingStory:
+    """One story of a plan, as the execution plane sees it — just enough for the
+    orchestrator-mode agent to build its dispatch plan (which implementer tier gets
+    which story). Mirrors the workflow-facing `Story` without importing it (plane split)."""
+
+    id: str
+    title: str
+    tier: str = "sonnet"                      # architect's per-story model selection (§10)
+
+
+@dataclass
 class CodingTask:
     """One unit of coding work handed to a CodingAgent inside a prepared workspace."""
 
@@ -18,9 +29,14 @@ class CodingTask:
     tier: str = "sonnet"                      # model tier (most coding is Sonnet, §5)
     max_turns: int = 30                       # bounded agent loop (§10)
     max_budget_usd: float = 1.00              # per-attempt spend cap handed to the SDK
+                                              # (in orchestrator mode this caps the WHOLE tree —
+                                              # lead + every subagent — via the SDK's aggregate)
     run_tests: bool = True                    # can the test command actually run in the sandbox
                                               # (profile.stack.sandbox_tests)? False -> QA reports
                                               # "unavailable" instead of a misleading "failed"
+    stories: list[CodingStory] = field(default_factory=list)
+                                              # per-story dispatch info for orchestrator mode;
+                                              # empty -> single-session coding (bugs, tests)
 
 
 @dataclass

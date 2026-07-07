@@ -151,12 +151,17 @@ classic multi-agent pattern:
   (`DEFAULT_RESEARCH_PERSONAS` — budget-conscious, time-constrained professional, power
   user, first-time user) is bounded by the caller-supplied list. Findings persist detail
   to storage and return lightweight references, not raw transcripts.
-- **`EngineeringPodWorkflow` — single coding pass.** A **single agent** (the **Claude Agent
-  SDK** in a disposable clone) implements the architect's stories **in order, in one
-  workspace** — the ordered story list handed over as one instruction — so the feature lands
-  as one coherent diff. (This deliberately is *not* a per-story parallel fan-out: independent
-  agents on separate clones caused churn, conflicting diffs, and partial features. Parallel
-  fan-out is the right pattern for *research*, not for cohesive coding.) The pod then runs QA
+- **`EngineeringPodWorkflow` — single coding pass, single writer.** One pod session (the
+  **Claude Agent SDK** in a disposable clone) implements the architect's stories **in order,
+  in one workspace**, so the feature lands as one coherent diff. For multi-story plans that
+  session runs in **orchestrator mode**: a Sonnet lead dispatches read-only `researcher`
+  subagents (parallel-safe by tool grant) and per-story `implementer`/`implementer_heavy`
+  writers — **strictly one at a time** in the shared tree, each story in a fresh context
+  window on the model tier the architect rated it for, with a checkpoint commit per accepted
+  story. (This deliberately is *not* a per-story parallel fan-out: independent writers on
+  separate clones caused churn, conflicting diffs, and partial features — the invariant is
+  *no concurrent writers, no divergent bases*. Parallel fan-out is the right pattern for
+  *research*, not for cohesive coding.) The pod then runs QA
   (one bounded `MAX_QA_FIX_PASSES` pass) and **opens a PR** through a pluggable `PRTarget`
   (`orchestrator/agents/coding/pr_target.py`: `local` clones/applies/commits a dry-run branch
   with no push; `github` pushes + `gh pr create`). A coding error returns a *failed* story

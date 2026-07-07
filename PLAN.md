@@ -154,6 +154,33 @@ Workflow shape changed again (R6: drained, local dev). **159 tests green.** Know
 no in-thread progress *during* the ~10–15 min coding pod (child workflow doesn't know
 the thread) — pod-internal progress is a possible follow-up.
 
+**Update (2026-07-06) — orchestrated coding pod (Variant A, heavy-lift headroom):** the
+single-agent pod invariant was *sharpened*, not broken: the real lesson of 2026-06-18 was
+**no concurrent writers on divergent bases** (parallel agents against separate clones →
+conflicting/partial diffs), not "one context window forever". Multi-story plans now run the
+Claude SDK agent in **orchestrator mode** (default; `CODING_ORCHESTRATOR=0` reverts): a
+Sonnet **lead** session in the one managed workspace dispatches SDK subagents via the Task
+tool — read-only `researcher`s (parallel fan-out safe *by tool grant*: Read/Glob/Grep only)
+and `implementer` (Sonnet) / `implementer_heavy` (Opus) writers dispatched **strictly one at
+a time**, each story in a **fresh context window** on the tier the architect selected for it
+(a complex story no longer escalates the *whole* run to Opus). The lead reviews each story's
+diff, re-dispatches at most once with concrete feedback, **checkpoint-commits** accepted
+stories (never pushes — diff capture is pinned-baseline so commits are safe, and a
+budget/turn soft-stop keeps completed stories), and ends with a per-story report (surfaced
+via `StoryResult.summary`, limit raised to 1500 chars in this mode — the pod's per-story
+visibility, since Temporal sees one activity). Caps: `CODING_MAX_TURNS` bounds the lead AND
+each subagent; `CODING_MAX_BUDGET_USD` caps the whole tree (SDK aggregates subagent spend);
+raise both + `BUDGET_USD` for heavy lifts. One-story plans (the bug path) skip orchestration
+— single session on the story's own tier. Plumbing: `CodingStory`/`CodingTask.stories`
+(types.py) → `_plan_stories` on all three coding passes (implement + both revise loops,
+coding_backed.py) → `_use_orchestrator`/`_orchestrator_prompt`/`_subagents` (claude_sdk.py;
+same <task> injection hygiene as single-session, subagents can't nest — no Task tool).
+Container agent (`claude_container`) stays single-session for now. CLAUDE.md §7/§10
+reworded to the single-WRITER invariant. **168 tests green** (`test_coding_orchestrator.py`
+pins the serialization/no-push/read-only-researcher/tier-routing/plumbing guards at $0).
+Not yet live-validated: needs a multi-story feature run (`ORG_LIVE=1` + `USE_AGENT_CODING=1`
++ `CODING_AGENT=claude`) to confirm dispatch behavior and real tree cost.
+
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`
   & `EngineeringPod` children. All stages currently call **stub** activities

@@ -25,12 +25,17 @@ CODING_ACTIVITY_TIMEOUT_MINUTES = 20
 
 # Coding-pod cost controls (CLAUDE.md §10 — the pod dominates a feature's cost). The agent
 # runs on the Claude subscription, so an uncapped pod can drain the 5-hour usage window. The
-# real spend guards are structural: ONE agent implements the whole feature in one workspace
-# (no parallel-agent fan-out), and a coding error returns a failed story instead of raising
-# (no Temporal retry storm — see coding_backed). The per-attempt caps below still bound that
-# one agent, but must be high enough for it to *finish* — too low (e.g. $0.25/8 turns) and it
+# real spend guards are structural: ONE pod session owns the whole feature in one workspace
+# (single-writer invariant — in orchestrator mode it dispatches per-story implementer
+# subagents strictly one at a time; never a parallel-clone fan-out), and a coding error
+# returns a failed story instead of raising (no Temporal retry storm — see coding_backed).
+# The per-attempt caps below bound the session: MAX_TURNS bounds the lead AND each subagent
+# individually; MAX_BUDGET_USD caps the WHOLE tree (the SDK aggregates subagent spend into
+# total_cost_usd). They must be high enough to *finish* — too low (e.g. $0.25/8 turns) and it
 # stops mid-task with no committable diff, so the PR comes up empty. ~$1.50/40 turns completed
-# a real dark-mode change with headroom. Read activity-side, so plain constants are fine.
+# a real dark-mode change with headroom. For genuinely heavy lifts, raise BOTH of these and
+# the BUDGET_USD workflow ceiling below — otherwise the budget gate trips to a human, which
+# is the designed failure mode, not an error. Read activity-side, so plain constants are fine.
 CODING_MAX_TURNS = 70
 CODING_MAX_BUDGET_USD = 2.50
 
