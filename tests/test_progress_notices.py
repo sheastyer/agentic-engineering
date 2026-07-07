@@ -91,10 +91,13 @@ async def test_feature_run_posts_every_stage_into_one_thread():
     assert "budget-conscious" in by_stage["research"].document_md
     # The terminal post reports the outcome.
     assert any("status: shipped" in line for line in by_stage["done"].text)
-    # Non-artifact stages have readable context.
-    assert any(line.startswith("summary:") for line in by_stage["brief"].text)
-    assert any(line.startswith("outcome: approved") for line in by_stage["council"].text)
+    # Non-artifact stages have readable context. The brief's fields and the council's
+    # per-voter tally are now enumerated rows (scannable), the rest stays header text.
+    assert any(r.label == "summary" and r.detail for r in by_stage["brief"].rows)
+    assert any("outcome: approved" in line for line in by_stage["council"].text)
+    assert {r.label for r in by_stage["council"].rows} >= {"legal", "sales"}
     assert any("PR: local://pr/" in line for line in by_stage["engineering"].text)
+    assert any(r.label == "CI" for r in by_stage["engineering"].rows)
 
 
 @pytest.mark.asyncio

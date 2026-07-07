@@ -73,14 +73,18 @@ async def test_feature_gates_notify_with_context_and_record_approvers():
         assert n.title == event.title
         assert n.project == event.project
     council, signoff, deploy = notices
-    # Council: the agents' advisory votes are in front of the human.
-    assert any(line.startswith("legal:") for line in council.context)
-    assert any(line.startswith("sales:") for line in council.context)
-    # Deploy: PR + QA/review/CI verdicts (PodResult surfaced through the notice).
+    # Council: the agents' advisory votes are enumerated rows in front of the human.
+    council_votes = {r.label: r.status for r in council.rows}
+    assert council_votes.get("legal") in ("approve", "reject")
+    assert council_votes.get("sales") in ("approve", "reject")
+    # Deploy: PR in the header, QA/review/CI verdicts as rows (PodResult -> notice).
     assert any("PR: local://pr/" in line for line in deploy.context)
-    assert any(line.startswith("QA: passed") for line in deploy.context)
-    assert any(line.startswith("review: approved") for line in deploy.context)
-    assert any(line.startswith("CI:") for line in deploy.context)
+    deploy_rows = {r.label: r for r in deploy.rows}
+    assert deploy_rows["QA"].status == "passed"
+    assert deploy_rows["review"].status == "approved"
+    assert "CI" in deploy_rows
+    # The queryable state keeps the flat "label: status — detail" shape it always had.
+    assert any(line.startswith("QA: passed") for line in state.gate_context)
     # Approver identity lands in the stage log (M5 SEC: the audit shows who decided).
     assert any("human override by shea" in line for line in result.stage_log)
     assert any("pm sign-off: approve (by shea)" in line for line in result.stage_log)

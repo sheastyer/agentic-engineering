@@ -36,11 +36,13 @@ with workflow.unsafe.imports_passed_through():
         MAX_SIGNOFF_REVISIONS,
         SIGNOFF_TIMEOUT_DAYS,
     )
+    from orchestrator.humanio.gates import row_line
     from orchestrator.shared.types import (
         ArchitectReview,
         CouncilResult,
         FeedbackEvent,
         GateNotice,
+        NoticeRow,
         ProgressNotice,
         ResearchRequest,
         Status,
@@ -177,12 +179,13 @@ class FeatureRequestWorkflow:
         brief = await self._act(act.pm_draft_brief, event, stage="pm_draft_brief")
         await self._notify_progress(
             "brief",
-            [
-                f"summary: {clip(brief.summary)}",
-                f"problem: {clip(brief.problem)}",
-                f"target users: {clip(brief.target_users)}",
+            [],
+            rows=[
+                NoticeRow("summary", "", clip(brief.summary)),
+                NoticeRow("problem", "", clip(brief.problem)),
+                NoticeRow("target users", "", clip(brief.target_users)),
             ]
-            + ([f"complexity: {brief.complexity}"] if brief.complexity else []),
+            + ([NoticeRow("complexity", brief.complexity)] if brief.complexity else []),
         )
 
         # 2. Exec council: parallel agent votes + human vote (signal w/ 72h timer)
@@ -231,12 +234,12 @@ class FeatureRequestWorkflow:
             self._cost += report.cost_tokens
             self._cost_usd += report.cost_usd
             await self._check_budget()
-            # One line for the panel — per-persona detail lives in the attached PDF.
+            # Header + a per-persona sentiment row — the full detail lives in the PDF.
             await self._notify_progress(
                 "research",
-                [
-                    f"overall: {report.overall_sentiment}",
-                    " · ".join(f"{f.persona} {f.sentiment}" for f in report.findings),
+                [f"overall: {report.overall_sentiment}"],
+                rows=[
+                    NoticeRow(label=f.persona, status=f.sentiment) for f in report.findings
                 ],
                 document_title=f"Consumer research — {self._title}",
                 document_md=_research_md(report),
@@ -262,8 +265,15 @@ class FeatureRequestWorkflow:
         plan = await self._act(act.architect_plan_stories, prd, report, stage="architect_plan_stories")
         await self._notify_progress(
             "stories",
-            [f"{len(plan.stories)} stories planned"]
-            + [f"{s.id}: {clip(s.title)} (est {s.estimate}, {s.tier})" for s in plan.stories],
+            [f"{len(plan.stories)} stories planned"],
+            rows=[
+                NoticeRow(
+                    label=s.id,
+                    status=f"{s.tier} · est {s.estimate}",
+                    detail=clip(s.title),
+                )
+                for s in plan.stories
+            ],
         )
 
         # 7a. Coding-budget gate (§9.4): the pod dominates a feature's cost (§10), so before
@@ -292,15 +302,11 @@ class FeatureRequestWorkflow:
         # nothing was captured, the note says why (honest absence beats silence).
         await self._notify_progress(
             "engineering",
-            [
-                f"coding: {pod.story_result.status}"
-                + (f" ({pod.story_result.tier})" if pod.story_result.tier else ""),
-                f"PR: {pod.pr_url or pod.branch}",
-                f"QA {'passed' if pod.qa.passed else 'failed'}"
-                f" · review {'approved' if pod.review_approved else 'unresolved'}"
-                f" · CI {clip(pod.ci_notes) or 'n/a'}",
+            [f"PR: {pod.pr_url or pod.branch}"] + self._screenshot_lines(pod),
+            rows=[
+                NoticeRow("coding", pod.story_result.status, pod.story_result.tier or "")
             ]
-            + self._screenshot_lines(pod),
+            + self._pod_verdict_rows(pod),
             image_refs=list(pod.screenshots),
         )
 
@@ -329,18 +335,13 @@ class FeatureRequestWorkflow:
         self._enter("deploy_approval")
         await self._notify_gate(
             "deploy",
-            [
-                f"PR: {pod.pr_url or pod.branch}",
-                f"QA: {'passed' if pod.qa.passed else 'failed'} — {clip(pod.qa.notes)}",
-                f"review: {'approved' if pod.review_approved else 'unresolved'}"
-                + (f" — {clip(pod.review_notes)}" if pod.review_notes else ""),
-                f"CI: {clip(pod.ci_notes) or 'n/a'}" + (f" ({pod.ci_url})" if pod.ci_url else ""),
-            ]
+            [f"PR: {pod.pr_url or pod.branch}"]
             + (
                 [f"screenshots: {len(pod.screenshots)} in thread (📸 engineering post)"]
                 if pod.screenshots
                 else []
             ),
+            rows=self._pod_verdict_rows(pod, detailed=True),
         )
         try:
             await workflow.wait_condition(
@@ -375,9 +376,13 @@ class FeatureRequestWorkflow:
         )
         await self._notify_gate(
             "council",
-            [f"brief: {clip(brief.summary)}"]
-            + [
-                f"{v.voter}: {'approve' if v.approve else 'reject'} — {clip(v.rationale)}"
+            [f"brief: {clip(brief.summary)}"],
+            rows=[
+                NoticeRow(
+                    label=v.voter,
+                    status="approve" if v.approve else "reject",
+                    detail=clip(v.rationale),
+                )
                 for v in agent_votes
             ],
         )
@@ -408,13 +413,16 @@ class FeatureRequestWorkflow:
                 f"council: escalated, agent advisory {approvals}/{len(agent_votes)} "
                 f"-> {'approved' if approved else 'rejected'}"
             )
-        # Outcome + a one-line tally; the rationales are on the gate card just above.
+        # Outcome + a per-voter tally row; the rationales are on the gate card just above.
         await self._notify_progress(
             "council",
             [
                 f"outcome: {'approved' if approved else 'rejected'}"
-                + (" (escalated to agent advisory majority)" if escalated else ""),
-                " · ".join(f"{v.voter} {'✅' if v.approve else '❌'}" for v in votes),
+                + (" (escalated to agent advisory majority)" if escalated else "")
+            ],
+            rows=[
+                NoticeRow(label=v.voter, status="approve" if v.approve else "reject")
+                for v in votes
             ],
         )
         return CouncilResult(votes=votes, approved=approved, escalated=escalated)
@@ -519,11 +527,18 @@ class FeatureRequestWorkflow:
         self._log.append(f"budget override declined by {self._budget_approver}; halting")
         raise _BudgetHalt()
 
-    async def _notify_gate(self, gate: str, context: list[str]) -> None:
+    async def _notify_gate(
+        self, gate: str, context: list[str], rows: list["NoticeRow"] | None = None
+    ) -> None:
         """Tell the human-I/O channel this workflow is parked at a gate. Advisory: a
         notification failure must never block or kill the gate — the signal path and the
-        gate's timeout still work without it, so failures degrade to a log line."""
-        self._gate_context = list(context)
+        gate's timeout still work without it, so failures degrade to a log line.
+
+        ``context`` is header/intro lines; ``rows`` are the enumerated items (votes,
+        verdicts) the Slack layer renders as scannable rows. The queryable ``gate_context``
+        keeps the flat string shape it always had, so audits/queries read unchanged."""
+        rows = rows or []
+        self._gate_context = list(context) + [row_line(r) for r in rows]
         notice = GateNotice(
             workflow_id=workflow.info().workflow_id,
             gate=gate,
@@ -531,12 +546,38 @@ class FeatureRequestWorkflow:
             project=self._project,
             cost_usd=round(self._cost_usd, 4),
             context=list(context),
+            rows=list(rows),
             thread_ts=self._thread_ts,
         )
         try:
             await run_activity(act.notify_gate, notice, timeout=NOTIFY_TIMEOUT)
         except Exception:
             self._log.append(f"gate notification failed ({gate}); gate still open on its timeout")
+
+    @staticmethod
+    def _pod_verdict_rows(pod, detailed: bool = False) -> list["NoticeRow"]:
+        """QA / review / CI as scannable verdict rows, shared by the engineering progress
+        post and the deploy gate card. ``detailed`` attaches the notes/URLs a human needs
+        to approve the deploy; the progress post stays terse (status word only). Pure
+        formatting — deterministic."""
+        ci_detail = ""
+        if detailed:
+            ci_detail = clip(pod.ci_notes) or ""
+            if pod.ci_url:
+                ci_detail = (ci_detail + " " if ci_detail else "") + pod.ci_url
+        return [
+            NoticeRow(
+                "QA",
+                "passed" if pod.qa.passed else "failed",
+                clip(pod.qa.notes) if detailed else "",
+            ),
+            NoticeRow(
+                "review",
+                "approved" if pod.review_approved else "unresolved",
+                clip(pod.review_notes) if detailed and pod.review_notes else "",
+            ),
+            NoticeRow("CI", "passed" if pod.ci_passed else "failed", ci_detail),
+        ]
 
     @staticmethod
     def _screenshot_lines(pod) -> list[str]:
@@ -553,19 +594,23 @@ class FeatureRequestWorkflow:
         self,
         stage: str,
         text: list[str],
+        rows: list["NoticeRow"] | None = None,
         document_title: str = "",
         document_md: str = "",
         image_refs: list[str] | None = None,
     ) -> None:
         """Post a stage update into the run's Slack thread (advisory, like _notify_gate).
         The first post anchors the thread: its returned ts is stored (deterministically —
-        activity results are part of history) and threaded onto every later notice."""
+        activity results are part of history) and threaded onto every later notice.
+        ``rows`` are enumerated items (votes, stories, verdicts) rendered as scannable
+        rows below the ``text`` header lines."""
         notice = ProgressNotice(
             workflow_id=workflow.info().workflow_id,
             stage=stage,
             title=self._title,
             project=self._project,
             text=list(text),
+            rows=list(rows or []),
             document_title=document_title,
             document_md=document_md,
             image_refs=list(image_refs or []),

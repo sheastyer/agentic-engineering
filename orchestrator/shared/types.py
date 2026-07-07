@@ -312,6 +312,23 @@ class ReviewResult:
 # Human gates (M5 — the human-I/O channel, D1: Slack)
 # ---------------------------------------------------------------------------
 @dataclass
+class NoticeRow:
+    """One enumerated item in a gate/progress notice — a council vote, a QA/CI verdict,
+    a planned story. The Slack layer renders each row as a scannable line (a status
+    emoji + bold label, the detail demoted into a quote) instead of folding everything
+    into one run-on paragraph, so a human can see the shape of a decision at a glance.
+
+    Plain strings only (no enums) so it serializes cleanly across the activity boundary
+    — see the StrEnum-converter note. ``status`` is a short verdict word ("approve",
+    "passed", "complex") that maps to a colored emoji; ``detail`` is the longer
+    rationale/notes, already clipped by the workflow."""
+
+    label: str
+    status: str = ""
+    detail: str = ""
+
+
+@dataclass
 class GateNotice:
     """What a workflow tells the human-I/O channel when it parks at a gate.
 
@@ -327,7 +344,8 @@ class GateNotice:
     title: str                  # the feedback title, so the human knows which request
     project: str
     cost_usd: float = 0.0       # spend so far, surfaced at every gate
-    context: list[str] = field(default_factory=list)
+    context: list[str] = field(default_factory=list)  # intro/header lines above the rows
+    rows: list[NoticeRow] = field(default_factory=list)  # enumerated items (votes, verdicts)
     thread_ts: str = ""         # the run's Slack thread anchor; gates post in-thread
                                 # (broadcast to channel) when set, top-level when not
 
@@ -345,7 +363,8 @@ class ProgressNotice:
     stage: str                  # "feedback_received" | "brief" | "council" | "prd" | ...
     title: str
     project: str
-    text: list[str] = field(default_factory=list)
+    text: list[str] = field(default_factory=list)  # intro/header lines above the rows
+    rows: list[NoticeRow] = field(default_factory=list)  # enumerated items (votes, stories, verdicts)
     document_title: str = ""    # set together with document_md
     document_md: str = ""       # markdown source of the artifact to attach
     image_refs: list[str] = field(default_factory=list)  # image files (worker-host paths) to
