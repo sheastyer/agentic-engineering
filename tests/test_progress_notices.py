@@ -101,12 +101,16 @@ async def test_feature_run_posts_every_stage_into_one_thread():
     assert all(n.thread_ts == ROOT_TS for n in progress[1:])
     assert [g.gate for g in gates] == ["council", "pm_signoff", "deploy"]
     assert all(g.thread_ts == ROOT_TS for g in gates)
-    # Artifact stages carry their documents (PRD full text; research synthesis).
+    # Artifact stages carry their documents (PRD full text; research synthesis; UX mocks) —
+    # uploaded as PDFs into the thread, not posted as dead artifact:// links.
     by_stage = {n.stage: n for n in progress}
     assert by_stage["prd"].document_md and "PRD v1" in by_stage["prd"].document_md
     assert "PRD v1" in by_stage["prd"].document_title
     assert by_stage["research"].document_md.startswith("# Consumer research")
     assert "budget-conscious" in by_stage["research"].document_md
+    assert by_stage["mocks"].document_md.startswith("# UX mocks")
+    assert "UX mocks" in by_stage["mocks"].document_title
+    assert not any("artifact://" in line for line in by_stage["mocks"].text)
     # The terminal post reports the outcome.
     assert any("status: shipped" in line for line in by_stage["done"].text)
     # Non-artifact stages have readable context. The brief's fields and the council's
