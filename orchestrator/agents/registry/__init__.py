@@ -232,7 +232,11 @@ REGISTRY: dict[str, Persona] = {
         system_template=_PRD_REVISE_PROMPT,
         output_model=contracts.PRDRevisionOutput,
         effort="medium",
-        max_tokens=8192,  # re-emits the FULL revised PRD; 3072 truncated mid-JSON (finish=length)
+        # re-emits the FULL revised PRD + Sonnet reasoning (shared gateway output budget).
+        # 3072 truncated mid-JSON (finish=length); 8192 then also truncated a long PRD
+        # (gardening-assistant "generate plan now", 2026-07-07). 16000 matches the largest
+        # personas — the wider ceiling's cost is negligible (cf. architect_review_prd).
+        max_tokens=16000,
     ),
     "pm_write_prd": Persona(
         name="pm_write_prd",
@@ -240,7 +244,7 @@ REGISTRY: dict[str, Persona] = {
         system_template=_PRD_AUTHOR_PROMPT,
         output_model=contracts.PRDAuthoringOutput,
         effort="high",
-        max_tokens=8192,  # full PRD body; headroom so a large doc can't truncate
+        max_tokens=16000,  # full PRD body + reasoning (shared gateway budget); 8192 too tight for a long PRD
     ),
     "architect_review_prd": Persona(
         name="architect_review_prd",
