@@ -1,0 +1,563 @@
+# story feat-add-a--generate-plan-now--button
+diff --git a/app/api/care-plan/generate/route.test.ts b/app/api/care-plan/generate/route.test.ts
+new file mode 100644
+index 0000000..396fa67
+--- /dev/null
++++ b/app/api/care-plan/generate/route.test.ts
+@@ -0,0 +1,133 @@
++import { beforeEach, describe, expect, it, vi } from 'vitest'
++
++// ─────────────────────────────────────────────────────────────────────────────
++// POST /care-plan/generate — the Plan/Today "regenerate my plan" trigger. The
++// engine run is delegated to runFirstPlanForGarden (mocked); everything below
++// the handler is mocked, but the care-plan contract stays REAL so the returned
++// payload is validated against carePlanGenerateResponse. Covers: resolving the
++// first garden when no garden_id is given, an explicit owned garden_id, an
++// explicit foreign/absent id → not_found, and an empty group → not_found.
++// ─────────────────────────────────────────────────────────────────────────────
++
++const { requireMemberMock, withTenantMock, listGardensMock, runFirstPlanMock } =
++  vi.hoisted(() => ({
++    requireMemberMock: vi.fn(),
++    withTenantMock: vi.fn(),
++    listGardensMock: vi.fn(),
++    runFirstPlanMock: vi.fn(),
++  }))
++
++vi.mock('@/lib/auth', () => ({ requireMember: requireMemberMock }))
++vi.mock('@/lib/db', () => ({
++  schema: { garden: { id: 'garden.id' } },
++  withTenant: withTenantMock,
++}))
++vi.mock('@/lib/repos/gardens', () => ({ listGardens: listGardensMock }))
++vi.mock('@/lib/jobs/run-first-plan', () => ({
++  runFirstPlanForGarden: runFirstPlanMock,
++}))
++
++import { POST } from './route'
++
++const GROUP_ID = '44444444-4444-4444-4444-444444444444'
++const GARDEN_ID = '11111111-1111-1111-1111-111111111111'
++const RUN_ID = '55555555-5555-5555-5555-555555555555'
++
++/**
++ * The handler passes a tx-using callback to withTenant. We drive it with a fake
++ * tx whose select().from().where().limit() resolves to `ownedRows`.
++ */
++function fakeTx(ownedRows: Array<{ id: string }>) {
++  return {
++    select: () => ({
++      from: () => ({
++        where: () => ({
++          limit: () => Promise.resolve(ownedRows),
++        }),
++      }),
++    }),
++  }
++}
++
++function postReq(body?: Record<string, unknown>): Request {
++  return new Request('http://localhost/api/care-plan/generate', {
++    method: 'POST',
++    headers: { 'Content-Type': 'application/json' },
++    body: body === undefined ? undefined : JSON.stringify(body),
++  })
++}
++
++beforeEach(() => {
++  vi.clearAllMocks()
++  requireMemberMock.mockResolvedValue({
++    gardenGroupId: GROUP_ID,
++    clerkUserId: 'u1',
++    role: 'owner',
++  })
++  runFirstPlanMock.mockResolvedValue({ engineRunId: RUN_ID, status: 'succeeded' })
++})
++
++describe('POST /api/care-plan/generate', () => {
++  it('resolves the first garden when no garden_id is provided', async () => {
++    withTenantMock.mockImplementation((_group: string, fn: (tx: unknown) => unknown) =>
++      fn(fakeTx([])),
++    )
++    listGardensMock.mockResolvedValue([{ id: GARDEN_ID }, { id: 'other' }])
++
++    const res = await POST(postReq({}))
++
++    expect(res.status).toBe(202)
++    expect(await res.json()).toEqual({
++      engine_run_id: RUN_ID,
++      garden_id: GARDEN_ID,
++      status: 'succeeded',
++    })
++    expect(runFirstPlanMock).toHaveBeenCalledWith({
++      gardenId: GARDEN_ID,
++      gardenGroupId: GROUP_ID,
++    })
++  })
++
++  it('runs for an explicit owned garden_id', async () => {
++    withTenantMock.mockImplementation((_group: string, fn: (tx: unknown) => unknown) =>
++      fn(fakeTx([{ id: GARDEN_ID }])),
++    )
++
++    const res = await POST(postReq({ garden_id: GARDEN_ID }))
++
++    expect(res.status).toBe(202)
++    expect(await res.json()).toEqual({
++      engine_run_id: RUN_ID,
++      garden_id: GARDEN_ID,
++      status: 'succeeded',
++    })
++    expect(listGardensMock).not.toHaveBeenCalled()
++    expect(runFirstPlanMock).toHaveBeenCalledWith({
++      gardenId: GARDEN_ID,
++      gardenGroupId: GROUP_ID,
++    })
++  })
++
++  it('returns not_found for an explicit garden_id not owned by the group', async () => {
++    withTenantMock.mockImplementation((_group: string, fn: (tx: unknown) => unknown) =>
++      fn(fakeTx([])),
++    )
++
++    const res = await POST(postReq({ garden_id: GARDEN_ID }))
++
++    expect(res.status).toBe(404)
++    expect(runFirstPlanMock).not.toHaveBeenCalled()
++  })
++
++  it('returns not_found when the group has no gardens and no id is given', async () => {
++    withTenantMock.mockImplementation((_group: string, fn: (tx: unknown) => unknown) =>
++      fn(fakeTx([])),
++    )
++    listGardensMock.mockResolvedValue([])
++
++    const res = await POST(postReq({}))
++
++    expect(res.status).toBe(404)
++    expect(runFirstPlanMock).not.toHaveBeenCalled()
++  })
++})
+diff --git a/app/api/care-plan/generate/route.ts b/app/api/care-plan/generate/route.ts
+new file mode 100644
+index 0000000..33b280d
+--- /dev/null
++++ b/app/api/care-plan/generate/route.ts
+@@ -0,0 +1,74 @@
++// POST /care-plan/generate — the Plan/Today "regenerate my plan" trigger
++// (care-plan.ts contract).
++//
++// Runs the proactive care engine for ONE garden, authorized by the caller's own
++// Clerk session (NEVER the x-job-secret job endpoint — ARCHITECTURE §11). Like
++// the onboarding run-first-plan route it mirrors, the run is forced and
++// idempotent (reconciliation), so a user mashing the button never produces
++// duplicate tasks.
++//
++// Unlike onboarding, the Today surface has no garden picker: `garden_id` is
++// optional. When provided we verify ownership; when omitted we resolve the
++// group's first garden (gardens[0], the same anchor the Today surface uses).
++//
++// Auth + ownership/resolution are checked under RLS in a short tenant
++// transaction; the engine run itself (which needs the jobs pool for the
++// engine_run ledger + weather cache — off-limits to route code) is delegated to
++// `runFirstPlanForGarden` in lib/jobs and runs AFTER that transaction closes, so
++// withTenant is never nested (composition rule §1).
++import { eq } from 'drizzle-orm'
++import {
++  carePlanGenerateRequest,
++  carePlanGenerateResponse,
++} from '@/lib/contracts/care-plan'
++import { apiError } from '@/lib/contracts/errors'
++import { requireMember } from '@/lib/auth'
++import { schema, withTenant } from '@/lib/db'
++import { parseJsonBody, routeErrorResponse } from '@/lib/http'
++import { listGardens } from '@/lib/repos/gardens'
++import { runFirstPlanForGarden } from '@/lib/jobs/run-first-plan'
++
++export async function POST(req: Request): Promise<Response> {
++  try {
++    const member = await requireMember()
++    const body = await parseJsonBody(req, carePlanGenerateRequest)
++    if (!body.ok) return body.response
++
++    // Resolve the target garden under RLS (short tenant tx). An explicit id is
++    // ownership-checked (RLS scopes the row to the caller's group, so a
++    // foreign/absent garden reads as not-found); an omitted id resolves to the
++    // group's first garden.
++    const gardenId = await withTenant(member.gardenGroupId, async (tx) => {
++      if (body.data.garden_id) {
++        const owned = await tx
++          .select({ id: schema.garden.id })
++          .from(schema.garden)
++          .where(eq(schema.garden.id, body.data.garden_id))
++          .limit(1)
++        return owned[0]?.id ?? null
++      }
++      const gardens = await listGardens(tx)
++      return gardens[0]?.id ?? null
++    })
++
++    if (gardenId === null) {
++      return body.data.garden_id
++        ? apiError('not_found', 'Garden not found.')
++        : apiError('not_found', 'No garden found for this group.')
++    }
++
++    const { engineRunId, status } = await runFirstPlanForGarden({
++      gardenId,
++      gardenGroupId: member.gardenGroupId,
++    })
++
++    const payload = carePlanGenerateResponse.parse({
++      engine_run_id: engineRunId,
++      garden_id: gardenId,
++      status,
++    })
++    return Response.json(payload, { status: 202 })
++  } catch (err) {
++    return routeErrorResponse(err)
++  }
++}
+diff --git a/app/plan/page.tsx b/app/plan/page.tsx
+index d79eb75..50d0bb2 100644
+--- a/app/plan/page.tsx
++++ b/app/plan/page.tsx
+@@ -8,6 +8,7 @@ import { withTenant } from '@/lib/db'
+ import { listTasks, serializeTask } from '@/lib/repos/tasks'
+ import { enrichTasks, loadGardenContext, todayFor } from '@/components/tasks/server-data'
+ import { groupTasksByDay } from '@/components/tasks/grouping'
++import { GeneratePlanButton } from '@/components/tasks/GeneratePlanButton'
+ import { TaskCard } from '@/components/tasks/TaskCard'
+ import { CARD } from '@/components/tasks/ui'
+ 
+@@ -58,7 +59,10 @@ export default async function PlanPage() {
+ 
+   return (
+     <main className="mx-auto flex max-w-[1080px] flex-col gap-6 px-4 pb-28 pt-6 sm:px-6">
+-      <h1 className="font-display text-[clamp(1.6rem,4vw,2rem)] font-medium text-moss">Plan</h1>
++      <div className="flex items-start justify-between gap-3">
++        <h1 className="font-display text-[clamp(1.6rem,4vw,2rem)] font-medium text-moss">Plan</h1>
++        <GeneratePlanButton />
++      </div>
+ 
+       <div className="grid gap-6 lg:grid-cols-7 lg:gap-3">
+         {days.map((day) => (
+diff --git a/app/today/page.tsx b/app/today/page.tsx
+index 8899ab1..30a6a4b 100644
+--- a/app/today/page.tsx
++++ b/app/today/page.tsx
+@@ -17,6 +17,7 @@ import { getLatestWeatherSnapshot } from '@/lib/repos/weather'
+ import { enrichTasks, loadGardenContext, todayFor } from '@/components/tasks/server-data'
+ import { classifyTaskUrgency, isDueToday, sortByUrgency } from '@/components/tasks/urgency'
+ import { dayLabel } from '@/components/tasks/grouping'
++import { GeneratePlanButton } from '@/components/tasks/GeneratePlanButton'
+ import { TaskCard } from '@/components/tasks/TaskCard'
+ import { WeatherCard } from '@/components/weather/WeatherCard'
+ import { CARD } from '@/components/tasks/ui'
+@@ -124,7 +125,10 @@ export default async function TodayPage() {
+ 
+   return (
+     <main className="mx-auto flex max-w-[1080px] flex-col gap-4 px-4 pb-28 pt-6 sm:px-6">
+-      <h1 className="font-display text-[clamp(1.6rem,4vw,2rem)] font-medium text-moss">Today</h1>
++      <div className="flex items-start justify-between gap-3">
++        <h1 className="font-display text-[clamp(1.6rem,4vw,2rem)] font-medium text-moss">Today</h1>
++        <GeneratePlanButton />
++      </div>
+ 
+       {isAway && (
+         <div className={`${CARD} border-l-[3px] border-l-sky`}>
+diff --git a/components/tasks/GeneratePlanButton.tsx b/components/tasks/GeneratePlanButton.tsx
+new file mode 100644
+index 0000000..f15a329
+--- /dev/null
++++ b/components/tasks/GeneratePlanButton.tsx
+@@ -0,0 +1,73 @@
++'use client'
++
++// "Generate plan now" — a manual trigger for POST /api/care-plan/generate
++// (S1), rendered on both Plan and Today headers. Mirrors DoneStep's fetch +
++// phase pattern and TaskCard's router.refresh()-on-success flash, since this
++// is the same "regenerate my plan" action just surfaced outside onboarding.
++
++import { useState } from 'react'
++import { useRouter } from 'next/navigation'
++import { Button } from '@/components/ui'
++
++type Phase = 'idle' | 'loading' | 'error'
++
++export function GeneratePlanButton() {
++  const router = useRouter()
++  const [phase, setPhase] = useState<Phase>('idle')
++  const [error, setError] = useState<string | null>(null)
++  const [flash, setFlash] = useState<string | null>(null)
++
++  async function generate() {
++    setPhase('loading')
++    setError(null)
++    setFlash(null)
++    try {
++      const res = await fetch('/api/care-plan/generate', {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({}),
++      })
++      const body = (await res.json().catch(() => null)) as {
++        status?: string
++        error?: { message?: string }
++      } | null
++
++      if (res.ok && (body?.status === 'succeeded' || body?.status === 'running')) {
++        setPhase('idle')
++        router.refresh()
++        setFlash('Plan updated')
++        setTimeout(() => setFlash(null), 2500)
++        return
++      }
++
++      setPhase('error')
++      setError(body?.error?.message ?? "Couldn't generate your plan — try again.")
++    } catch {
++      setPhase('error')
++      setError("Couldn't generate your plan — try again.")
++    }
++  }
++
++  return (
++    <div className="flex flex-col items-start gap-1.5">
++      <Button
++        variant="soft"
++        size="sm"
++        isLoading={phase === 'loading'}
++        onClick={() => void generate()}
++      >
++        {phase === 'loading' ? 'Checking your forecast…' : 'Generate plan now'}
++      </Button>
++      {flash && (
++        <p role="status" className="text-[0.85rem] font-semibold text-leaf">
++          ✓ {flash}
++        </p>
++      )}
++      {error && (
++        <p role="alert" className="text-[0.85rem] text-care-treat-ink">
++          {error}
++        </p>
++      )}
++    </div>
++  )
++}
+diff --git a/docs/api/openapi.json b/docs/api/openapi.json
+index 570c68d..aee3195 100644
+--- a/docs/api/openapi.json
++++ b/docs/api/openapi.json
+@@ -1296,6 +1296,41 @@
+           "next_cursor"
+         ]
+       },
++      "CarePlanGenerateRequest": {
++        "type": "object",
++        "properties": {
++          "garden_id": {
++            "type": "string",
++            "format": "uuid"
++          }
++        }
++      },
++      "CarePlanGenerateResponse": {
++        "type": "object",
++        "properties": {
++          "engine_run_id": {
++            "type": "string",
++            "format": "uuid"
++          },
++          "garden_id": {
++            "type": "string",
++            "format": "uuid"
++          },
++          "status": {
++            "type": "string",
++            "enum": [
++              "running",
++              "succeeded",
++              "failed"
++            ]
++          }
++        },
++        "required": [
++          "engine_run_id",
++          "garden_id",
++          "status"
++        ]
++      },
+       "TaskProvenance": {
+         "type": "object",
+         "properties": {
+@@ -4523,6 +4558,65 @@
+         }
+       }
+     },
++    "/care-plan/generate": {
++      "post": {
++        "tags": [
++          "care-plan"
++        ],
++        "summary": "Regenerate the care plan for a garden now, authorized via the caller session (Plan/Today surface)",
++        "requestBody": {
++          "content": {
++            "application/json": {
++              "schema": {
++                "$ref": "#/components/schemas/CarePlanGenerateRequest"
++              }
++            }
++          }
++        },
++        "responses": {
++          "202": {
++            "description": "Engine run accepted",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/CarePlanGenerateResponse"
++                }
++              }
++            }
++          },
++          "400": {
++            "description": "Body/query/params failed schema validation.",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/ErrorEnvelope"
++                }
++              }
++            }
++          },
++          "401": {
++            "description": "No/invalid session.",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/ErrorEnvelope"
++                }
++              }
++            }
++          },
++          "404": {
++            "description": "No resource with that id in this tenant.",
++            "content": {
++              "application/json": {
++                "schema": {
++                  "$ref": "#/components/schemas/ErrorEnvelope"
++                }
++              }
++            }
++          }
++        }
++      }
++    },
+     "/tasks": {
+       "get": {
+         "tags": [
+diff --git a/lib/contracts/care-plan.ts b/lib/contracts/care-plan.ts
+new file mode 100644
+index 0000000..2b33d19
+--- /dev/null
++++ b/lib/contracts/care-plan.ts
+@@ -0,0 +1,53 @@
++import { z } from 'zod'
++import { engineRunStatus } from './enums'
++import { registry } from './registry'
++import { withErrors } from './shared'
++
++// ─────────────────────────────────────────────────────────────────────────────
++// Care plan — the user-facing "regenerate my plan" trigger on the Plan/Today
++// surface. Mirrors the onboarding run-first-plan route: it runs the proactive
++// care engine for ONE garden, authorized by the caller's own Clerk session, and
++// is explicitly NOT the raw `x-job-secret` job endpoint (ARCHITECTURE §11). The
++// run is forced and idempotent, so tapping "regenerate" never duplicates tasks.
++//
++// Unlike onboarding (which always carries a specific garden_id from the wizard),
++// the Today UI has no garden picker: `garden_id` is optional and, when omitted,
++// resolves to the group's first garden (gardens[0]).
++// ─────────────────────────────────────────────────────────────────────────────
++
++export const carePlanGenerateRequest = z
++  .object({ garden_id: z.string().uuid().optional() })
++  .openapi('CarePlanGenerateRequest')
++export type CarePlanGenerateRequest = z.infer<typeof carePlanGenerateRequest>
++
++export const carePlanGenerateResponse = z
++  .object({
++    engine_run_id: z.string().uuid(),
++    garden_id: z.string().uuid(),
++    status: engineRunStatus,
++  })
++  .openapi('CarePlanGenerateResponse')
++export type CarePlanGenerateResponse = z.infer<typeof carePlanGenerateResponse>
++
++registry.register('CarePlanGenerateRequest', carePlanGenerateRequest)
++registry.register('CarePlanGenerateResponse', carePlanGenerateResponse)
++
++registry.registerPath({
++  method: 'post',
++  path: '/care-plan/generate',
++  tags: ['care-plan'],
++  summary:
++    'Regenerate the care plan for a garden now, authorized via the caller session (Plan/Today surface)',
++  request: {
++    body: {
++      content: {
++        'application/json': { schema: carePlanGenerateRequest },
++      },
++    },
++  },
++  responses: withErrors({
++    status: 202,
++    description: 'Engine run accepted',
++    schema: carePlanGenerateResponse,
++  }),
++})
+diff --git a/lib/contracts/contracts.test.ts b/lib/contracts/contracts.test.ts
+index 29c793e..4ef1427 100644
+--- a/lib/contracts/contracts.test.ts
++++ b/lib/contracts/contracts.test.ts
+@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
+ import type { ZodTypeAny } from 'zod'
+ import { areaCreateRequest } from './areas'
+ import { careLogCreateRequest, careLogUpdateRequest } from './care-logs'
++import { carePlanGenerateRequest } from './care-plan'
+ import { diagnosisFindings } from './diagnosis'
+ import { imageContent, postMessageRequest, storedMessage, threadCreateRequest } from './chat'
+ import { climateProfile, gardenCreateRequest, gardenUpdateRequest } from './gardens'
+@@ -506,6 +507,12 @@ const cases: Case[] = [
+     valid: [{ garden_id: '11111111-1111-1111-1111-111111111111' }],
+     invalid: [{ garden_id: 'not-a-uuid' }],
+   },
++  {
++    name: 'carePlanGenerateRequest',
++    schema: carePlanGenerateRequest,
++    valid: [{}, { garden_id: '11111111-1111-1111-1111-111111111111' }],
++    invalid: [{ garden_id: 'not-a-uuid' }],
++  },
+   {
+     name: 'jobSecretHeader',
+     schema: jobSecretHeader,
+diff --git a/lib/contracts/index.ts b/lib/contracts/index.ts
+index d4ee018..e418113 100644
+--- a/lib/contracts/index.ts
++++ b/lib/contracts/index.ts
+@@ -22,6 +22,7 @@ import './areas'
+ import './plants'
+ import './species'
+ import './care-logs'
++import './care-plan'
+ import './tasks'
+ import './tools'
+ import './diagnosis'
+@@ -41,6 +42,7 @@ export * from './areas'
+ export * from './plants'
+ export * from './species'
+ export * from './care-logs'
++export * from './care-plan'
+ export * from './tasks'
+ export * from './tools'
+ export * from './diagnosis'

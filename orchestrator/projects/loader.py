@@ -1,11 +1,12 @@
 """Project Profile loader. Adding a project = registering its profile here, nothing more."""
 
-from orchestrator.projects import meal_planner
+from orchestrator.projects import gardening_assistant, meal_planner
 from orchestrator.projects.profile import ProjectProfile
 
 # id -> profile. One line per target project.
 _PROFILES: dict[str, ProjectProfile] = {
     meal_planner.PROFILE.id: meal_planner.PROFILE,
+    gardening_assistant.PROFILE.id: gardening_assistant.PROFILE,
 }
 
 
