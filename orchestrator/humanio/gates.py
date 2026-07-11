@@ -53,11 +53,8 @@ def row_line(row: NoticeRow) -> str:
     parts = f"{row.label}: {row.status}" if row.status else row.label
     return f"{parts} — {row.detail}" if row.detail else parts
 
-# gate -> [(label, decision, button style)]. A gate with no buttons is notify-only:
-# the clarification gate wants free text, which a button can't carry — the human
-# answers via the CLI / a direct workflow signal (submit_user_clarification).
-# The coding_budget gate additionally renders a text input (see build_blocks) so the
-# human can fund a custom dollar amount instead of the estimate.
+# gate -> [(label, decision, button style)]. A gate with no buttons is input-only
+# (the clarification gate's answer is free text — see GATE_INPUTS below).
 GATE_BUTTONS: dict[str, list[tuple[str, str, str]]] = {
     "council": [("Approve", "approve", "primary"), ("Reject", "reject", "danger")],
     "pm_signoff": [("Approve", "approve", "primary"), ("Request revision", "revise", "danger")],
@@ -65,6 +62,30 @@ GATE_BUTTONS: dict[str, list[tuple[str, str, str]]] = {
     "budget": [("Approve override", "approve", "primary"), ("Halt", "reject", "danger")],
     "coding_budget": [("Fund estimate", "approve", "primary"), ("Halt run", "reject", "danger")],
     "clarification": [],
+}
+
+# gate -> (decision, label, placeholder) for gates that also take FREE TEXT, rendered as
+# a plain_text_input under the buttons (dispatch on Enter). What the text means per gate:
+#   pm_signoff    — revision feedback: typing = "request revision", and the PM agent
+#                   revises the PRD against exactly these words instead of a generic nudge.
+#   coding_budget — a custom dollar amount instead of the estimate.
+#   clarification — the answer to the reporter question (this gate's only control).
+GATE_INPUTS: dict[str, tuple[str, str, str]] = {
+    "pm_signoff": (
+        "revise",
+        "Or request revision with feedback — press Enter",
+        "e.g. drop the CSV export; clarify the empty state",
+    ),
+    "coding_budget": (
+        "custom",
+        "Or fund a custom budget (USD) — press Enter",
+        "e.g. 6.50",
+    ),
+    "clarification": (
+        "answer",
+        "Answer the reporter's question — press Enter",
+        "your clarification reaches the engineering pod",
+    ),
 }
 
 GATE_LABELS = {
@@ -190,6 +211,13 @@ class GateAction:
     text: str = ""      # what the human typed, for text-input decisions ("custom")
 
 
+def escape_mrkdwn(text: str) -> str:
+    """Escape Slack's mrkdwn control characters in human-typed text before the bot
+    echoes it back into a message. ``<`` opens Slack's special sequences — a typed
+    ``<!channel>`` would otherwise fire a mass notification when re-posted."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def parse_dollars(raw: str) -> float | None:
     """A human-typed dollar amount ("6.50", "$12") -> float, or None when it doesn't
     parse or fails the sanity bounds (0 < value <= 500 — a guard against absurd inputs;
@@ -212,7 +240,13 @@ def signal_for(action: GateAction) -> tuple[str, list] | None:
     if action.gate == "pm_signoff":
         if action.decision not in ("approve", "revise"):
             return None
-        return "submit_pm_signoff", [action.decision, approver]
+        # Text typed into the card's input is the PM's revision feedback; a bare
+        # button click sends none (the workflow falls back to a generic revise).
+        return "submit_pm_signoff", [action.decision, approver, action.text.strip()]
+    if action.gate == "clarification":
+        if action.decision != "answer" or not action.text.strip():
+            return None
+        return "submit_user_clarification", [action.text.strip(), approver]
     if action.gate == "coding_budget":
         if action.decision == "custom":
             amount = parse_dollars(action.text)
@@ -274,27 +308,28 @@ def build_blocks(notice: GateNotice) -> list[dict]:
     ]
     if buttons:
         blocks.append({"type": "actions", "block_id": f"gate:{notice.gate}", "elements": buttons})
-    if notice.gate == "coding_budget":
-        # Free-form budget: a text input that fires a block_actions payload on Enter
+    if notice.gate in GATE_INPUTS:
+        # Free-text gates: a text input that fires a block_actions payload on Enter
         # (dispatch_action is required for inputs in messages). Buttons carry our JSON
         # envelope in ``value``; an input's value IS the typed text, so the envelope
         # rides ``block_id`` instead — the listener decodes both shapes.
+        decision, input_label, placeholder = GATE_INPUTS[notice.gate]
         blocks.append(
             {
                 "type": "input",
                 "dispatch_action": True,
                 "block_id": json.dumps(
-                    {"workflow_id": notice.workflow_id, "gate": notice.gate, "decision": "custom"}
+                    {"workflow_id": notice.workflow_id, "gate": notice.gate, "decision": decision}
                 ),
-                "label": {
-                    "type": "plain_text",
-                    "text": "Or fund a custom budget (USD) — press Enter",
-                },
+                "label": {"type": "plain_text", "text": input_label},
                 "element": {
                     "type": "plain_text_input",
-                    "action_id": f"gate:{notice.gate}:custom",
-                    "placeholder": {"type": "plain_text", "text": "e.g. 6.50"},
+                    "action_id": f"gate:{notice.gate}:{decision}",
+                    "placeholder": {"type": "plain_text", "text": placeholder},
                     "dispatch_action_config": {"trigger_actions_on": ["on_enter_pressed"]},
+                    # Defensive cap: this text flows into LLM prompts (revision concerns,
+                    # the bug context) — bound it at the source.
+                    "max_length": 2000,
                 },
             }
         )

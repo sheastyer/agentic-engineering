@@ -45,13 +45,17 @@ async def test_bug_clarification_signal_unblocks():
             await wait_until(
                 handle, lambda s: s.stage == "await_clarification", BugWorkflow.get_state
             )
-            await handle.signal(BugWorkflow.submit_user_clarification, "it repros on Safari")
+            # The Slack path delivers (text, approver) — assert the identity is recorded.
+            await handle.signal(
+                BugWorkflow.submit_user_clarification, args=["it repros on Safari", "shea"]
+            )
             await wait_until(handle, lambda s: s.stage == "deploy_approval", BugWorkflow.get_state)
             await handle.signal(BugWorkflow.submit_deploy_approval, True)
             result = await handle.result()
 
     assert result.status == Status.SHIPPED
     assert "await_clarification" in result.stage_log
+    assert "clarification received (by shea)" in result.stage_log
 
 
 @pytest.mark.asyncio

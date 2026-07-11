@@ -98,6 +98,7 @@ class FeatureRequestWorkflow:
         self._human_vote: Vote | None = None
         self._pm_signoff: str | None = None      # "approve" | "revise"
         self._pm_signoff_by = "unknown"
+        self._pm_signoff_feedback = ""           # free text typed into the Slack card on "revise"
         self._deploy_approved: bool | None = None
         self._deploy_approver = "unknown"
         self._budget_decision: bool | None = None  # budget-override gate
@@ -114,9 +115,12 @@ class FeatureRequestWorkflow:
         self._human_vote = Vote(voter=voter, approve=approve, rationale="human council vote")
 
     @workflow.signal
-    def submit_pm_signoff(self, decision: str, approver: str = "unknown") -> None:
+    def submit_pm_signoff(
+        self, decision: str, approver: str = "unknown", feedback: str = ""
+    ) -> None:
         self._pm_signoff = decision
         self._pm_signoff_by = approver
+        self._pm_signoff_feedback = feedback
 
     @workflow.signal
     def submit_deploy_approval(self, approve: bool, approver: str = "unknown") -> None:
@@ -257,17 +261,26 @@ class FeatureRequestWorkflow:
             )
 
             # 6. PM sign-off gate; "revise" loops back into PRD revision (bounded)
-            decision = await self._pm_signoff_gate(prd, report)
+            decision, feedback = await self._pm_signoff_gate(prd, report)
             if decision == "approve":
                 break
             signoff_revisions += 1
             if signoff_revisions > MAX_SIGNOFF_REVISIONS:
                 self._log.append("pm sign-off revisions exhausted; proceeding with current PRD")
                 break
+            # The human's typed feedback becomes the concerns the PM agent revises
+            # against — their words, not a generic nudge. One concern per line (the
+            # single-line Slack input yields one; multi-line arrives via CLI / direct
+            # signal); a bare button click falls back to the generic revision request.
+            concerns = [line.strip() for line in feedback.splitlines() if line.strip()]
             prd = await self._act(
                 act.pm_revise_prd,
                 prd,
-                ArchitectReview(approved=False, pass_no=0, concerns=["PM requested revision"]),
+                ArchitectReview(
+                    approved=False,
+                    pass_no=0,
+                    concerns=concerns or ["PM requested revision"],
+                ),
                 stage="pm_revise_prd",
             )
             self._prd_version = prd.version
@@ -455,9 +468,11 @@ class FeatureRequestWorkflow:
         self._log.append(f"PRD loop hit cap ({MAX_PRD_PASSES}); proceeding with v{prd.version}")
         return prd
 
-    async def _pm_signoff_gate(self, prd, report) -> str:
+    async def _pm_signoff_gate(self, prd, report) -> tuple[str, str]:
         # Consume-after-read (not reset-before-wait): a decision delivered early is still
-        # honored, but each loopback iteration requires a fresh signal.
+        # honored, but each loopback iteration requires a fresh signal. Returns
+        # ``(decision, feedback)`` — feedback is the free text typed into the Slack card
+        # on a revise, consumed together with its decision.
         self._enter("pm_signoff")
         await self._notify_gate(
             "pm_signoff",
@@ -473,11 +488,16 @@ class FeatureRequestWorkflow:
             )
         except asyncio.TimeoutError:
             self._log.append("PM sign-off timed out; treating as revise")
-            return "revise"
+            return "revise", ""
         decision = self._pm_signoff
+        feedback = self._pm_signoff_feedback
         self._pm_signoff = None
-        self._log.append(f"pm sign-off: {decision or 'revise'} (by {self._pm_signoff_by})")
-        return decision or "revise"
+        self._pm_signoff_feedback = ""
+        self._log.append(
+            f"pm sign-off: {decision or 'revise'} (by {self._pm_signoff_by})"
+            + (f" — feedback: {clip(feedback)}" if feedback else "")
+        )
+        return decision or "revise", feedback
 
     async def _coding_budget_gate(self, estimate) -> float:
         """Park until a human funds the coding round: approve the estimate, set a custom

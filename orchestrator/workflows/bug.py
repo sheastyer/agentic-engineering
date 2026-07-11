@@ -64,6 +64,7 @@ class BugWorkflow:
         self._gate_context: list[str] = []
         self._thread_ts = ""    # the run's Slack thread anchor (set by the first progress post)
         self._clarification: str | None = None
+        self._clarification_by = "unknown"
         self._deploy_approved: bool | None = None
         self._deploy_approver = "unknown"
         self._budget_decision: bool | None = None
@@ -74,8 +75,9 @@ class BugWorkflow:
     # `approver` defaults to "unknown" so the extension is additive (replay-safe for
     # histories signalled before identities existed; M5 SEC — approvals carry who approved).
     @workflow.signal
-    def submit_user_clarification(self, text: str) -> None:
+    def submit_user_clarification(self, text: str, approver: str = "unknown") -> None:
         self._clarification = text
+        self._clarification_by = approver
 
     @workflow.signal
     def submit_deploy_approval(self, approve: bool, approver: str = "unknown") -> None:
@@ -145,8 +147,8 @@ class BugWorkflow:
         # Optional clarification gate (only if triage asked for it), 7-day timeout.
         if triage.needs_clarification:
             self._enter("await_clarification")
-            # Notify-only: a clarification is free text, not a button click, so the
-            # human answers via the CLI / a workflow signal (see humanio.gates).
+            # Free-text gate: the Slack card carries an answer input (see
+            # humanio.gates GATE_INPUTS); the CLI / a direct signal still work too.
             await self._notify_gate(
                 "clarification",
                 [f"reporter: {event.submitted_by}", f"report: {clip(event.body)}"],
@@ -156,6 +158,7 @@ class BugWorkflow:
                     lambda: self._clarification is not None,
                     timeout=timedelta(days=CLARIFICATION_TIMEOUT_DAYS),
                 )
+                self._log.append(f"clarification received (by {self._clarification_by})")
             except asyncio.TimeoutError:
                 self._log.append("clarification timed out; proceeding with original report")
 
