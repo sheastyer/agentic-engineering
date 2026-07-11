@@ -1,8 +1,13 @@
 """Org-wide constants. Project-specific config lives in a Project Profile (M2), not here."""
 
-# Temporal connection + routing.
-TEMPORAL_TARGET = "localhost:7233"
-TEMPORAL_NAMESPACE = "default"
+import os
+
+# Temporal connection + routing. TEMPORAL_TARGET is env-overridable because deployed
+# processes (worker/listener/intake in the Coolify compose stack) reach Temporal by its
+# compose service name, not localhost. Read once at import — a plain string thereafter,
+# so workflow code importing this module stays deterministic (R3).
+TEMPORAL_TARGET = os.environ.get("TEMPORAL_TARGET", "localhost:7233")
+TEMPORAL_NAMESPACE = os.environ.get("TEMPORAL_NAMESPACE", "default")
 TASK_QUEUE = "agentic-org"
 
 # Bounded-loop caps (CLAUDE.md §10 — every agent<->agent loop has an explicit cap).

@@ -15,6 +15,14 @@ dependencies = [
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
+    # fastapi.testclient (tests/test_intake_http.py) drives the intake app over httpx.
+    "httpx>=0.27",
+]
+# HTTP intake adapter (M5 intake half) — only `python -m orchestrator.intake_http` needs
+# these, imported lazily where possible; the worker/CLI/stub paths never do (mirrors [slack]).
+intake = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
 ]
 # Claude Agent SDK — the M4 engineering-pod runtime, and an optional reasoning provider
 # that runs on a Claude subscription's monthly Agent SDK credit (shells out to `claude`).
