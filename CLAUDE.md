@@ -189,7 +189,7 @@ for bugs, `FeatureRequestWorkflow` for features. The system costs nothing while 
 ### FeatureRequestWorkflow (primary focus)
 Ordered stages (the HTML diagram is the canonical version once it exists):
 1. `pm_draft_brief` (activity)
-2. **Exec council** — `council_vote` agents (legal, sales) in parallel + human vote
+2. **Exec council** — `council_vote` agents (legal, sales, engineering, cx) in parallel + human vote
    via signal, 72h escalation timer → tally (deterministic) → branch on `approved?`
 3. `pm_write_prd` → **bounded** PRD ↔ `architect_review_prd` loop (max 3 passes)
 4. `ux_generate_mocks` (conditional)

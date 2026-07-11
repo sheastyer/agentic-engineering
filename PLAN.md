@@ -238,6 +238,19 @@ hardcoded demo text; the PM brief and the pod need the real report). Still pendi
 full multi-story live run to the PR (the run was cut at the timeout one story from a
 complete diff).
 
+**Update (2026-07-11) — council broadened to four advisory lenses:** the exec council
+now votes legal + sales + **engineering** (feasibility/effort-vs-value; rejects
+disproportionate builds) + **cx** (user-experience/support-burden; rejects user-hostile
+mechanics) — two new Sonnet personas (`council_engineering`, `council_cx`), pure registry
+entries through the existing generic `council_agent_vote` activity (no new activity code;
+the roster is `COUNCIL_AGENT_PERSONAS` in `feature_request.py`, mapped via
+`COUNCIL_PERSONA_BY_VOTER`). Eval-gated per the M3 swap discipline: both persona sets
+3/3 CON+assert incl. injection resistance, live on the gateway (~$0.005/vote — council
+cost per feature roughly doubles to ~$0.02, negligible next to the pod). Human vote
+stays decisive; escalation majority now tallies 4 advisory votes (ties still fail).
+R6: the council schedules two more vote activities per run — drain in-flight feature
+workflows (local dev precedent).
+
 **Update (2026-07-07) — post-QA screenshots in the run's Slack thread:** the org now
 produces **visual evidence**: after the pod's QA verdict passes (and the CI fix loop
 settles, so the shots match exactly the diff the deploy gate would merge), a new

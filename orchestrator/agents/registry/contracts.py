@@ -48,7 +48,7 @@ class BugPriorityOutput(BaseModel):
 class CouncilVoteOutput(BaseModel):
     approve: bool = Field(
         description="Whether this council member approves taking the feature forward, "
-        "judged strictly from this member's lens (legal risk / commercial value)."
+        "judged strictly from this member's assigned lens."
     )
     rationale: str = Field(
         description="One or two sentences justifying the vote from this member's lens."

@@ -34,7 +34,7 @@ async def test_council_escalates_when_human_never_votes():
 
             result = await handle.result()
 
-    # No human vote -> escalate to the agents' advisory majority (2/2 approve), proceed
+    # No human vote -> escalate to the agents' advisory majority (4/4 approve), proceed
     # and ship, but the log records that the human gate escalated on the timer.
     assert result.status == Status.SHIPPED
     assert any("timed out (72h)" in line for line in result.stage_log)
