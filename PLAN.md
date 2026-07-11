@@ -271,6 +271,31 @@ incl. the org-shipped dark-mode toggle) → clean teardown (no containers left; 
 volumes isolated from the dev stack). Still pending: the full-thread version through a
 real `USE_AGENT_CODING=1` + `ORG_SLACK=1` run (shots landing in the Slack thread).
 
+**Update (2026-07-11) — Coolify deployment stack (standing org, HTTP intake):** the org
+can now run as a standing Coolify deployment instead of laptop processes:
+[`docker-compose.coolify.yml`](./docker-compose.coolify.yml) (runbook:
+[`docs/COOLIFY.md`](./docs/COOLIFY.md)) ships Postgres + Temporal (auto-setup, gRPC
+published for LAN CLI use) + the Temporal Web UI (put its domain behind Access — no
+built-in auth) + three processes off one image (`infra/Dockerfile`: python + `claude`
+CLI/Node + `gh` + docker CLI/compose + Playwright Chromium): the **worker** (ORG_LIVE +
+USE_AGENT_CODING + ORG_SLACK, `CODING_SANDBOX=container` via the host's socket-mounted
+Docker — workspaces on a same-path host bind mount + `TMPDIR` so sandbox `-v` paths
+resolve on the host; entrypoint rewrites ssh remotes to `GH_TOKEN` https and sets the
+pod's git identity), the **Slack Socket Mode listener**, and a new **HTTP intake
+adapter** (`orchestrator/intake_http.py`, `[intake]` extra: FastAPI `POST /feedback` →
+`intake.route()`, bearer `INTAKE_TOKEN`, caller-supplied id = idempotency key → 409 on
+redelivery, 422 on unknown project/kind, `/healthz` lists projects) — feedback enters
+over HTTP instead of `cli.run`; a future Kafka consumer is just another caller of the
+same `route()`. `TEMPORAL_TARGET`/`TEMPORAL_NAMESPACE` are now env-overridable (read
+once at import; deployed processes reach Temporal by compose service name). Known gaps,
+documented in the runbook: post-QA screenshots degrade (`captured=False`) in this
+topology (preview publishes on the host, profiles point at localhost), and the deployed
+pod draws on the same Claude subscription window as interactive use. Intake idempotency
+is id-ever, not id-while-running (`route()` now passes `REJECT_DUPLICATE` — the Temporal
+default would silently re-run a completed feedback id). **216 tests green**
+(`tests/test_intake_http.py`: 6 new — auth, both workflow routings, generated ids,
+duplicate→409, validation). Not yet live-validated on a Coolify host.
+
 **What exists:**
 - `orchestrator/workflows/` — `FeatureRequestWorkflow`, `BugWorkflow`, + `ConsumerResearch`
   & `EngineeringPod` children. All stages currently call **stub** activities

@@ -1,0 +1,16 @@
+# Keep the compose build context lean — the Dockerfile only COPYs pyproject/README +
+# orchestrator/worker/cli, but the context ships everything not excluded here.
+.git
+.claude
+.venv
+.localdata
+runs
+evals
+tests
+docs
+__pycache__
+**/__pycache__
+*.egg-info
+.env
+.env.*
+!.env.example
