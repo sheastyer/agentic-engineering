@@ -1,0 +1,6 @@
+# Local state may contain provider-computed values — never commit it.
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.tfstate.lock.info
+plan.out
