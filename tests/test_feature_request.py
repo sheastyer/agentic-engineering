@@ -258,3 +258,52 @@ async def test_pm_revise_loops_back_then_approves():
 
     assert result.status == Status.SHIPPED
     assert result.stage_log.count("consumer_research") >= 2  # ran again after the revise
+
+
+@pytest.mark.asyncio
+async def test_pm_revise_feedback_reaches_the_revision_agent():
+    """Free text typed into the Slack sign-off card must arrive at pm_revise_prd as the
+    concerns the PM agent revises against — one per line — not the generic nudge."""
+    from temporalio import activity
+
+    from orchestrator.shared.types import PRD, ArchitectReview
+
+    seen_concerns: list[list[str]] = []
+
+    @activity.defn(name="pm_revise_prd")
+    async def revise_spy(prd: PRD, review: ArchitectReview) -> PRD:
+        seen_concerns.append(list(review.concerns))
+        return PRD(
+            feature_id=prd.feature_id,
+            version=prd.version + 1,
+            content=f"(spy) PRD v{prd.version + 1}",
+            project=prd.project,
+        )
+
+    async with await WorkflowEnvironment.start_local(dev_server_existing_path=TEMPORAL_CLI) as env:
+        async with await _start(env, activities_with({"pm_revise_prd": revise_spy})):
+            event = feature_event()
+            handle = await env.client.start_workflow(
+                FeatureRequestWorkflow.run, event, id=event.id, task_queue=TASK_QUEUE
+            )
+            await handle.signal(FeatureRequestWorkflow.submit_human_vote, args=[True, "tester"])
+
+            await wait_until(handle, lambda s: s.stage == "pm_signoff", GET_STATE)
+            v1 = (await handle.query(GET_STATE)).prd_version
+            await handle.signal(
+                FeatureRequestWorkflow.submit_pm_signoff,
+                args=["revise", "shea", "drop the CSV export\nclarify the empty state"],
+            )
+
+            await wait_until(
+                handle, lambda s: s.stage == "pm_signoff" and s.prd_version > v1, GET_STATE
+            )
+            await handle.signal(FeatureRequestWorkflow.submit_pm_signoff, "approve")
+            await wait_until(handle, lambda s: s.stage == "deploy_approval", GET_STATE)
+            await handle.signal(FeatureRequestWorkflow.submit_deploy_approval, True)
+            result = await handle.result()
+
+    assert result.status == Status.SHIPPED
+    assert ["drop the CSV export", "clarify the empty state"] in seen_concerns
+    # The audit trail records the feedback alongside who asked for it.
+    assert any("feedback: drop the CSV export" in line for line in result.stage_log)

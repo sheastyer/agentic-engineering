@@ -16,6 +16,7 @@ from orchestrator.humanio.gates import (
     GateAction,
     build_blocks,
     build_progress_blocks,
+    escape_mrkdwn,
     fallback_text,
     render_progress_text,
     render_rows,
@@ -63,9 +64,71 @@ def test_build_blocks_carries_context_and_decodable_buttons():
         assert value == {"workflow_id": "feedback-123", "gate": "deploy", "decision": decision}
 
 
-def test_clarification_gate_is_notify_only():
+def test_clarification_gate_has_no_buttons_but_takes_a_typed_answer():
     blocks = build_blocks(_notice("clarification"))
-    assert [b["type"] for b in blocks] == ["section", "context"]  # no buttons to forge
+    # No buttons to forge; the reporter answer is free text, typed into the card.
+    assert [b["type"] for b in blocks] == ["section", "input", "context"]
+    (input_block,) = [b for b in blocks if b["type"] == "input"]
+    assert json.loads(input_block["block_id"]) == {
+        "workflow_id": "feedback-123", "gate": "clarification", "decision": "answer",
+    }
+
+
+def test_pm_signoff_card_takes_typed_revision_feedback():
+    blocks = build_blocks(_notice("pm_signoff"))
+    (input_block,) = [b for b in blocks if b["type"] == "input"]
+    assert input_block["dispatch_action"] is True
+    assert json.loads(input_block["block_id"]) == {
+        "workflow_id": "feedback-123", "gate": "pm_signoff", "decision": "revise",
+    }
+
+
+def test_typed_json_in_an_input_is_text_not_an_envelope():
+    """An approver typing our envelope shape into a free-text field must NOT redirect
+    the signal at another workflow — an input's value is always literal text."""
+    forged = json.dumps({"workflow_id": "victim-999", "gate": "deploy", "decision": "approve"})
+    payload = {
+        "type": "block_actions",
+        "user": {"id": "U0SHEA", "username": "shea"},
+        "actions": [
+            {
+                "type": "plain_text_input",
+                "action_id": "gate:clarification:answer",
+                "block_id": json.dumps(
+                    {"workflow_id": "feedback-123", "gate": "clarification", "decision": "answer"}
+                ),
+                "value": forged,
+            }
+        ],
+    }
+    action = parse_block_action(payload)
+    assert action.workflow_id == "feedback-123"      # from block_id, not the typed JSON
+    assert action.gate == "clarification"
+    assert action.text == forged                     # the typed JSON is just the answer text
+
+
+def test_escape_mrkdwn_defuses_slack_control_sequences():
+    assert escape_mrkdwn("<!channel> a & b <http://x>") == (
+        "&lt;!channel&gt; a &amp; b &lt;http://x&gt;"
+    )
+
+
+def test_signal_for_carries_typed_text_through_freetext_gates():
+    # Typed feedback on the sign-off card = "revise against exactly these words".
+    revise = GateAction(
+        workflow_id="w", gate="pm_signoff", decision="revise",
+        user_id="U0SHEA", user_name="shea", text="drop the CSV export ",
+    )
+    assert signal_for(revise) == (
+        "submit_pm_signoff", ["revise", "shea", "drop the CSV export"]
+    )
+    answer = GateAction(
+        workflow_id="w", gate="clarification", decision="answer",
+        user_id="U0SHEA", user_name="shea", text="it happens only on Safari",
+    )
+    assert signal_for(answer) == (
+        "submit_user_clarification", ["it happens only on Safari", "shea"]
+    )
 
 
 # --- outbound: enumerated rows render as scannable lines, not a wall ----------------
@@ -288,8 +351,9 @@ def test_parse_block_action_rejects_foreign_payloads(payload):
     [
         ("council", "approve", ("submit_human_vote", [True, "shea"])),
         ("council", "reject", ("submit_human_vote", [False, "shea"])),
-        ("pm_signoff", "approve", ("submit_pm_signoff", ["approve", "shea"])),
-        ("pm_signoff", "revise", ("submit_pm_signoff", ["revise", "shea"])),
+        ("pm_signoff", "approve", ("submit_pm_signoff", ["approve", "shea", ""])),
+        ("pm_signoff", "revise", ("submit_pm_signoff", ["revise", "shea", ""])),
+        ("clarification", "answer", None),    # answer with no text -> no signal
         ("deploy", "approve", ("submit_deploy_approval", [True, "shea"])),
         ("deploy", "reject", ("submit_deploy_approval", [False, "shea"])),
         ("budget", "approve", ("submit_budget_decision", [True, "shea"])),

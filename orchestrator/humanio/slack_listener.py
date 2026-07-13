@@ -23,7 +23,7 @@ import os
 
 from temporalio.client import Client
 
-from orchestrator.humanio.gates import GateAction, signal_for
+from orchestrator.humanio.gates import GateAction, escape_mrkdwn, signal_for
 from orchestrator.shared.config import TEMPORAL_NAMESPACE, TEMPORAL_TARGET
 
 _log = logging.getLogger(__name__)
@@ -42,9 +42,9 @@ def parse_block_action(payload: dict) -> GateAction | None:
     one of ours (wrong type, no actions, or no JSON envelope anywhere we expect it).
 
     Two shapes: a **button** carries our ``{workflow_id, gate, decision}`` envelope in
-    its ``value``; a **text input** (the coding-budget gate's custom amount) can't — its
-    value IS what the human typed — so there the envelope rides ``block_id`` and the
-    typed text lands in ``GateAction.text``."""
+    its ``value``; a **text input** (any GATE_INPUTS gate — sign-off feedback, a custom
+    budget, a clarification answer) can't — its value IS what the human typed — so there
+    the envelope rides ``block_id`` and the typed text lands in ``GateAction.text``."""
     if payload.get("type") != "block_actions":
         return None
     actions = payload.get("actions") or []
@@ -52,12 +52,21 @@ def parse_block_action(payload: dict) -> GateAction | None:
         return None
     raw_value = actions[0].get("value")
     text = ""
-    envelope = _json_dict(raw_value)
-    if envelope is None:
+    if actions[0].get("type") == "plain_text_input":
+        # An input's value IS what the human typed — NEVER try it as an envelope.
+        # (An approver typing our JSON shape into a free-text field could otherwise
+        # aim a forged decision at any workflow id they can read off a card footer.)
         envelope = _json_dict(actions[0].get("block_id"))
         if envelope is None:
             return None
         text = raw_value or ""
+    else:
+        envelope = _json_dict(raw_value)
+        if envelope is None:
+            envelope = _json_dict(actions[0].get("block_id"))
+            if envelope is None:
+                return None
+            text = raw_value or ""
     workflow_id = envelope.get("workflow_id")
     gate = envelope.get("gate")
     decision = envelope.get("decision")
@@ -89,12 +98,21 @@ async def deliver(temporal: Client, action: GateAction) -> str:
             # The typed amount didn't parse — tell the human instead of a silent drop
             # (the card's input stays live, so they can just retype).
             return f"⚠️ couldn't read {action.text!r} as a dollar amount (0 < $ ≤ 500) — try again"
+        if action.gate == "clarification" and action.decision == "answer":
+            return "⚠️ empty answer — type the clarification and press Enter"
         return f"⚠️ unrecognized gate action {action.gate}:{action.decision} — ignored"
     name, args = mapped
     await temporal.get_workflow_handle(action.workflow_id).signal(name, args=args)
     who = action.user_name or action.user_id
     if action.gate == "coding_budget" and action.decision == "custom":
         return f"✅ coding_budget: *custom ${args[1]:.2f}* by @{who}"
+    if action.gate == "pm_signoff" and action.decision == "revise" and args[2]:
+        # Echo the feedback so the channel shows WHAT was asked, not just that a
+        # revision was requested (the PM agent revises against exactly this text).
+        # Escaped: the bot must not re-post a typed <!channel> as live mrkdwn.
+        return f"✅ pm_signoff: *revise* by @{who} — “{escape_mrkdwn(args[2][:300])}”"
+    if action.gate == "clarification":
+        return f"✅ clarification answered by @{who}: “{escape_mrkdwn(args[0][:300])}”"
     return f"✅ {action.gate}: *{action.decision}* by @{who}"
 
 
