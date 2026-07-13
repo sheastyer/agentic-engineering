@@ -171,7 +171,7 @@ async def test_human_veto_rejects_despite_agent_approval():
 
 @pytest.mark.asyncio
 async def test_human_overrides_agent_dissent():
-    # Both agents vote NO; the human YES is decisive and the feature proceeds to ship.
+    # Every agent votes NO; the human YES is decisive and the feature proceeds to ship.
     async with await WorkflowEnvironment.start_local(dev_server_existing_path=TEMPORAL_CLI) as env:
         activities = activities_with({"council_agent_vote": mock.council_vote_reject})
         async with await _start(env, activities):

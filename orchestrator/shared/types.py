@@ -65,7 +65,7 @@ class Brief:
 
 @dataclass
 class Vote:
-    voter: str                  # "legal" | "sales" | "human"
+    voter: str                  # a COUNCIL_AGENT_PERSONAS id ("legal", "cx", ...) | "human"
     approve: bool
     rationale: str
     cost_tokens: int = 0

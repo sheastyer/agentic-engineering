@@ -54,7 +54,10 @@ with workflow.unsafe.imports_passed_through():
     from orchestrator.workflows.consumer_research import ConsumerResearchWorkflow
     from orchestrator.workflows.engineering_pod import EngineeringPodWorkflow
 
-COUNCIL_AGENT_PERSONAS = ["legal", "sales"]
+# Advisory voter roster: each id maps to a registry persona (COUNCIL_PERSONA_BY_VOTER).
+# The human vote stays decisive; these lenses inform it. Changing the roster changes
+# how many vote activities the council schedules -> drain in-flight runs (R6).
+COUNCIL_AGENT_PERSONAS = ["legal", "sales", "engineering", "cx"]
 
 
 def _research_md(report) -> str:
@@ -381,7 +384,7 @@ class FeatureRequestWorkflow:
     # --- stage helpers ----------------------------------------------------------
     async def _run_council(self, brief) -> CouncilResult:
         # Governance model: the human vote is DECISIVE (veto/override). Agent votes
-        # (legal, sales) are advisory input the human weighs. Only if the human never
+        # (COUNCIL_AGENT_PERSONAS) are advisory input the human weighs. Only if the human never
         # votes (72h timer fires) do we fall back to the agents' advisory majority.
         self._enter("exec_council")
         agent_votes = list(

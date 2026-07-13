@@ -201,7 +201,7 @@ def pm_draft_brief_agent(event: FeedbackEvent) -> Brief:
 
 def council_vote_with_runner(provider: ModelProvider, voter: str, brief: Brief) -> Vote:
     """Real council vote via the Agent Runner. `voter` is the workflow's voter id
-    ("legal"/"sales"); it selects the lens-specific persona. Pure for $0 unit testing."""
+    (COUNCIL_AGENT_PERSONAS, e.g. "legal"); it selects the lens-specific persona. Pure for $0 unit testing."""
     persona = get_persona(COUNCIL_PERSONA_BY_VOTER[voter])
     profile = load_profile(brief.project)
     task_input = (
@@ -225,7 +225,7 @@ def council_vote_with_runner(provider: ModelProvider, voter: str, brief: Brief) 
 @activity.defn(name="council_agent_vote")
 def council_agent_vote_agent(persona: str, brief: Brief) -> Vote:
     """Live council vote. Registered under the stub's name so the swap is a one-liner.
-    `persona` is the workflow's voter id (legal/sales)."""
+    `persona` is the workflow's voter id (COUNCIL_AGENT_PERSONAS)."""
     return council_vote_with_runner(build_provider(), persona, brief)
 
 

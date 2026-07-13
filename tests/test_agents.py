@@ -42,6 +42,22 @@ def test_council_personas_on_sonnet_tier():
     # Council votes are the first Sonnet swap; fail loudly if they drift off-tier.
     assert get_persona("council_legal").tier == "sonnet"
     assert get_persona("council_sales").tier == "sonnet"
+    assert get_persona("council_engineering").tier == "sonnet"
+    assert get_persona("council_cx").tier == "sonnet"
+
+
+def test_council_roster_maps_to_registered_vote_personas():
+    """Every workflow voter id must resolve to a registered persona with the council
+    vote contract — a roster entry without its persona would crash live at the gather."""
+    from orchestrator.agents.registry import COUNCIL_PERSONA_BY_VOTER
+    from orchestrator.agents.registry.contracts import CouncilVoteOutput
+    from orchestrator.workflows.feature_request import COUNCIL_AGENT_PERSONAS
+
+    for voter in COUNCIL_AGENT_PERSONAS:
+        persona = get_persona(COUNCIL_PERSONA_BY_VOTER[voter])
+        assert persona.output_model is CouncilVoteOutput
+        # Each voter set also has an eval case set, per the M3 swap discipline.
+    assert set(COUNCIL_AGENT_PERSONAS) == set(COUNCIL_PERSONA_BY_VOTER)
 
 
 def test_architect_personas_on_opus_tier():
