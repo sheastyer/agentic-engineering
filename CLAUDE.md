@@ -129,6 +129,8 @@ strings, no date suffixes):
 - **Haiku** `claude-haiku-4-5` — $1 in / $5 out, 200K ctx. Triage, routing, notifications.
 - **Sonnet** `claude-sonnet-5` — $3 / $15 (intro $2/$10 through 2026-08-31), 1M ctx. Votes, revisions, synthetic users, simple-story coding.
 - **Opus** `claude-opus-4-8` — $5 / $25, 1M ctx. PRD authoring, architecture review, story planning.
+  *(Upgrade candidate: `claude-opus-5` — same price, released 2026-07-24, drop-in per
+  Anthropic's migration guide. Not yet adopted; re-run the eval gates before switching.)*
 
 Cost notes that shape the budget design: the Opus→Haiku spread is only **5×** (tiering
 matters for latency/quality more than raw cost); a *feature* run's cost is dominated by
