@@ -214,6 +214,20 @@ and submitting feedback — is in
 
 Get the org running against the built-in example, then point it at your own app.
 
+> **Three gotchas that will burn you if you skip them:**
+>
+> 1. **Billing:** the Claude.ai subscription does **not** fund the reasoning
+>    plane's API/SDK calls — that's a separate credit pool. The reasoning plane
+>    runs on the Vercel AI Gateway (`AI_GATEWAY_API_KEY`); the coding plane runs
+>    the Claude Agent SDK on the Claude subscription. Details: CLAUDE.md §5–6.
+> 2. **Running the worker from inside a Claude Code session:** strip the
+>    `CLAUDECODE*` env vars first (`env -u CLAUDECODE -u CLAUDE_CODE_SSE_PORT …`)
+>    or the pod's spawned `claude` errors with "error result: success". Exact
+>    command: comments in `.env.example`.
+> 3. **Slack human gates** (`ORG_SLACK=1`) need a bot token, an app-level Socket
+>    Mode token, a channel id, and approver ids — all documented inline in
+>    `.env.example`, including how to start the inbound listener.
+
 ```bash
 # install (Python ≥3.10)
 python3 -m venv .venv
