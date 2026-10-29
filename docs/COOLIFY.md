@@ -45,10 +45,13 @@ Optional: `CODING_AGENT` (default `claude`; `mock` for a $0 smoke deploy),
 - **`intake` (port 8000)** — the feedback endpoint. Bearer-token-protected but not
   rate-limited; keep it behind Access / LAN-only (see the security model section
   below — feedback text ultimately reaches a coding agent).
-- `temporal` also publishes **gRPC 7233 on the host** so `cli.run` / `cli.trace` /
-  `evals.run` on the LAN can drive the deployed org
-  (`TEMPORAL_TARGET=<coolify-host>:7233 python -m cli.trace …`). There is no auth
-  on that port — remove the `ports:` mapping if the host is exposed beyond the LAN.
+- `temporal` binds **gRPC 7233 to the host's loopback only** (`127.0.0.1:7233`).
+  There is no auth or TLS on that port and the LAN is not a trusted network, so it
+  is not reachable from other machines. To drive the deployed org from a laptop,
+  tunnel it first:
+  `ssh -L 7233:127.0.0.1:7233 ubuntu@<coolify-host>` then
+  `TEMPORAL_TARGET=127.0.0.1:7233 python -m cli.trace …`. After a redeploy, confirm
+  the binding on the host with `ss -ltnp | grep 7233` (expect `127.0.0.1:7233` only).
 
 ## 4. Host prerequisites (one-time, on the Coolify server)
 
