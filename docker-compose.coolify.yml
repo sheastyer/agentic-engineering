@@ -4,8 +4,8 @@
 # feedback and run it through the full flow, without a laptop in the loop:
 #
 #   postgres         Temporal's persistence (named volume)
-#   temporal         Temporal server (auto-setup; gRPC 7233, published on the
-#                    host so cli.run / cli.trace can drive it from the LAN)
+#   temporal         Temporal server (auto-setup; gRPC 7233, bound to the
+#                    host loopback only; ssh -L to drive it from a laptop)
 #   ui               Temporal Web UI — watch every workflow/stage live
 #   worker           the org: all reasoning personas live (Vercel gateway),
 #                    real coding pod (Claude subscription), Slack gates
@@ -69,10 +69,12 @@ services:
       # cli.trace reads history too — don't let runs vanish after the 24h default).
       - DEFAULT_NAMESPACE_RETENTION=720h
     ports:
-      # gRPC on the host: lets cli.run / cli.trace / evals on the LAN target the
-      # deployed org (TEMPORAL_TARGET=<server>:7233). Remove if the Coolify host
-      # is reachable from untrusted networks — there is no auth on this port.
-      - "7233:7233"
+      # gRPC bound to the Coolify host's loopback ONLY. There is no auth or TLS on
+      # this port, and the LAN is not a trusted network (Guest Wi-Fi shares the
+      # firewall zone; security audit 2026-10-28). To drive the deployed org from a
+      # laptop, tunnel it: `ssh -L 7233:127.0.0.1:7233 ubuntu@<coolify-host>` then
+      # TEMPORAL_TARGET=127.0.0.1:7233.
+      - "127.0.0.1:7233:7233"
     depends_on:
       postgres:
         condition: service_healthy

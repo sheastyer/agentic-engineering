@@ -1,11 +1,19 @@
 name: CI
 
 # Run the test suite on every PR (and on pushes to main for a post-merge signal).
-# Executes on a self-hosted runner advertising the labels `self-hosted, ci`.
+# Runs on GitHub-hosted runners. This repo is PUBLIC, so `pull_request` jobs can
+# be triggered by fork PRs; those must never land on the homelab's self-hosted
+# runner (LXC 111 shares a host and a docker-group user with private repos).
+# Security audit 2026-10-28 (homelab docs/security-audit-2026-10-28.html).
 on:
   pull_request:
   push:
     branches: [main]
+
+# Read-only token for every job (fork PRs already get read-only; this makes
+# pushes to main the same).
+permissions:
+  contents: read
 
 # A newer push to the same PR cancels the in-flight run so the runner isn't tied up.
 concurrency:
@@ -14,15 +22,13 @@ concurrency:
 
 jobs:
   test:
-    runs-on: [self-hosted, ci]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Ensure the Temporal CLI (dev server used by the workflow tests)
         run: |
-          # Installs to ~/.temporalio/bin — the path tests/helpers.py resolves. The
-          # self-hosted runner's filesystem persists between jobs, so this is a no-op
-          # after the first run.
+          # Installs to ~/.temporalio/bin — the path tests/helpers.py resolves.
           if [ ! -x "$HOME/.temporalio/bin/temporal" ]; then
             curl -sSf https://temporal.download/cli.sh | sh
           fi
@@ -39,6 +45,6 @@ jobs:
       - name: Run tests
         run: |
           . .venv/bin/activate
-          # Docker-backed tests self-skip when no daemon is reachable; the runner has
-          # Docker, so the sandbox-isolation gate is exercised here.
+          # Docker-backed tests self-skip when no daemon is reachable; ubuntu-latest
+          # ships Docker, so the sandbox-isolation gate is exercised here.
           pytest -q
